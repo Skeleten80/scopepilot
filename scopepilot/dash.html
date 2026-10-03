@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopePilot — Telescope Console</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#141926; --panel2:#1a2133; --line:#263049;
+          --txt:#dbe4f3; --dim:#8b98b4; --acc:#6ea8fe; --ok:#4ade80;
+          --warn:#fbbf24; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 18px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  header h1 span { color:var(--acc); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); }
+  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .badge { font-size:12px; padding:3px 10px; border-radius:20px;
+            background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
+  .badge.ok { color:var(--ok); border-color:#1f4d33; }
+  .badge.warn { color:var(--warn); border-color:#5c4510; }
+  .badge.bad { color:var(--bad); border-color:#5c2020; }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+         gap:14px; padding:16px; max-width:1200px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:12px; padding:14px 16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:1px;
+             color:var(--dim); margin:0 0 12px; }
+  .pos { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .pos .field { background:var(--panel2); border-radius:8px; padding:8px 10px; }
+  .pos .k { font-size:11px; color:var(--dim); }
+  .pos .v { font-size:19px; font-variant-numeric:tabular-nums; margin-top:2px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  button { background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+           border-radius:8px; padding:9px 14px; font-size:14px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:#1d3a6e; border-color:#2c5296; }
+  button.danger { background:#4a1f1f; border-color:#7a2e2e; }
+  button.active { background:#1d3a6e; border-color:var(--acc); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  input[type=text], input[type=number] { background:var(--panel2); color:var(--txt);
+      border:1px solid var(--line); border-radius:8px; padding:9px 12px;
+      font-size:14px; width:100%; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  .dpad { display:grid; grid-template-columns:repeat(3,64px); gap:6px;
+          justify-content:center; margin:6px 0; }
+  .dpad button { height:56px; font-size:20px; padding:0; user-select:none;
+                 -webkit-user-select:none; touch-action:none; }
+  #log { height:150px; overflow-y:auto; background:#080b10; border:1px solid var(--line);
+         border-radius:8px; padding:8px 10px; font-family:ui-monospace,monospace;
+         font-size:12px; color:var(--dim); }
+  #log div { margin:2px 0; }
+  #log .t { color:#5b6b8c; margin-right:8px; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--line);
+          border-top-color:var(--acc); border-radius:50%;
+          animation:sp 0.8s linear infinite; vertical-align:-1px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  .hidden { display:none !important; }
+  .queue-item { display:flex; justify-content:space-between; align-items:center;
+                padding:7px 4px; border-bottom:1px solid var(--line); font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="conn"></div>
+  <h1>ScopePilot <span>// telescope console</span></h1>
+  <span class="badge" id="backend">…</span>
+  <span class="badge" id="claimBadge">manual control free</span>
+  <span style="flex:1"></span>
+  <span class="badge" id="clock"></span>
+</header>
+<main>
+  <section class="card">
+    <h2>Position</h2>
+    <div class="pos">
+      <div class="field"><div class="k">RA (J2000-ish)</div><div class="v" id="ra">—</div></div>
+      <div class="field"><div class="k">Dec</div><div class="v" id="dec">—</div></div>
+      <div class="field"><div class="k">Azimuth</div><div class="v" id="az">—</div></div>
+      <div class="field"><div class="k">Altitude</div><div class="v" id="alt">—</div></div>
+    </div>
+    <div class="row">
+      <span class="badge" id="aligned">alignment ?</span>
+      <span class="badge" id="tracking">tracking ?</span>
+      <span class="badge hidden" id="slewing"><span class="spin"></span> slewing</span>
+      <span class="badge warn hidden" id="parked">parked</span>
+    </div>
+    <div class="row"><span class="badge" id="note" style="display:none"></span></div>
+  </section>
+
+  <section class="card">
+    <h2>Handpad</h2>
+    <div class="dpad">
+      <span></span><button data-dir="up">▲</button><span></span>
+      <button data-dir="left">◀</button><button data-dir="stop" class="danger">■</button><button data-dir="right">▶</button>
+      <span></span><button data-dir="down">▼</button><span></span>
+    </div>
+    <div class="row"><label style="font-size:12px;color:var(--dim)">rate <b id="rateVal">5</b> / 9</label></div>
+    <input type="range" id="rate" min="1" max="9" value="5">
+    <div class="row"><button id="abort" class="danger" style="flex:1">ABORT — cancel goto &amp; stop</button></div>
+  </section>
+
+  <section class="card">
+    <h2>GoTo</h2>
+    <input type="text" id="target" list="targets" placeholder="M51, M13, M42…" autocomplete="off">
+    <datalist id="targets"></datalist>
+    <div class="row">
+      <button id="goto" class="primary">Slew</button>
+      <button id="sync">Sync here</button>
+    </div>
+    <div class="row">
+      <button id="park">Park</button>
+      <button id="unpark">Unpark</button>
+    </div>
+    <h2 style="margin-top:16px">Tracking</h2>
+    <div class="row" id="trackBtns">
+      <button data-mode="off">Off</button>
+      <button data-mode="alt-az">Alt-Az</button>
+      <button data-mode="eq-north">EQ N</button>
+      <button data-mode="eq-south">EQ S</button>
+    </div>
+  </section>
+
+  <section class="card" id="queueCard">
+    <h2>AstroCapture night queue</h2>
+    <div id="queue"><div style="color:var(--dim);font-size:13px">
+      Add <code>?plan=/path/to/night_queue.yaml</code> to the URL to load it.</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Manual override</h2>
+    <div style="font-size:13px;color:var(--dim);margin-bottom:10px">
+      While claimed, AstroCapture's sequencer should pause instead of
+      slewing against you.</div>
+    <div class="row">
+      <input type="text" id="claimBy" placeholder="your name" style="flex:1;min-width:120px">
+      <button id="claimBtn" class="primary">Claim</button>
+      <button id="releaseBtn">Release</button>
+    </div>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
+    <h2>Event log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+function log(msg) {
+  const el = document.createElement('div');
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML = `<span class="t">${t}</span>${msg}`;
+  const box = $('log'); box.prepend(el);
+  while (box.children.length > 60) box.lastChild.remove();
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+function fmtRA(h) {
+  if (h == null) return '—';
+  h = ((h % 24) + 24) % 24;
+  const H = Math.floor(h), M = Math.floor((h - H) * 60), S = Math.floor((((h - H) * 60) - M) * 60);
+  return `${String(H).padStart(2,'0')}:${String(M).padStart(2,'0')}:${String(S).padStart(2,'0')}`;
+}
+function fmtDec(d) {
+  if (d == null) return '—';
+  const s = d < 0 ? '−' : '+'; d = Math.abs(d);
+  const D = Math.floor(d), M = Math.floor((d - D) * 60);
+  return `${s}${String(D).padStart(2,'0')}°${String(M).padStart(2,'0')}′`;
+}
+function fmtDeg(d) { return d == null ? '—' : d.toFixed(2) + '°'; }
+
+let lastState = null;
+async function poll() {
+  try {
+    const r = await fetch('/api/state'); const s = await r.json();
+    lastState = s;
+    $('conn').className = 'dot' + (s.connected ? ' on' : '');
+    $('backend').textContent = `${s.backend} · ${s.model || '?'}`;
+    $('ra').textContent = fmtRA(s.ra_hours);
+    $('dec').textContent = fmtDec(s.dec_deg);
+    $('az').textContent = fmtDeg(s.az_deg);
+    $('alt').textContent = fmtDeg(s.alt_deg);
+    const al = $('aligned');
+    al.textContent = s.aligned ? 'aligned ✓' : 'not aligned';
+    al.className = 'badge ' + (s.aligned ? 'ok' : 'bad');
+    $('tracking').textContent = 'tracking: ' + s.tracking_mode;
+    $('slewing').classList.toggle('hidden', !s.slewing);
+    $('parked').classList.toggle('hidden', !s.parked);
+    const note = $('note');
+    if (s.note) { note.style.display = ''; note.textContent = s.note; }
+    else note.style.display = 'none';
+    document.querySelectorAll('#trackBtns button').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === s.tracking_mode));
+    const mo = s.manual_override || {};
+    const cb = $('claimBadge');
+    cb.textContent = mo.claimed ? `claimed by ${mo.by}` : 'manual control free';
+    cb.className = 'badge ' + (mo.claimed ? 'warn' : '');
+    $('clock').textContent = new Date(s.server_time * 1000).toLocaleTimeString();
+  } catch (e) { $('conn').className = 'dot'; }
+}
+setInterval(poll, 1000); poll();
+
+// handpad: press-and-hold jog
+document.querySelectorAll('.dpad button').forEach(b => {
+  const dir = b.dataset.dir;
+  if (dir === 'stop') { b.onclick = () => api('/api/jog_stop', {}).then(() => log('jog stopped')).catch(e => log('ERR ' + e.message)); return; }
+  const rate = () => parseInt($('rate').value, 10);
+  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture(e.pointerId);
+    api('/api/jog', {direction: dir, rate: rate()}).catch(err => log('ERR ' + err.message)); });
+  const stop = () => api('/api/jog_stop', {}).catch(err => log('ERR ' + err.message));
+  b.addEventListener('pointerup', stop); b.addEventListener('pointercancel', stop);
+});
+$('rate').addEventListener('input', () => $('rateVal').textContent = $('rate').value);
+$('abort').onclick = () => api('/api/stop', {}).then(() => log('ABORT: goto cancelled, axes stopped')).catch(e => log('ERR ' + e.message));
+
+// goto / sync
+let searchTimer = null;
+$('target').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = $('target').value.trim(); if (q.length < 2) return;
+    try {
+      const j = await (await fetch('/api/targets?q=' + encodeURIComponent(q))).json();
+      $('targets').innerHTML = (j.results || []).map(r =>
+        `<option value="${r.name}">${r.label || ''} · ${r.source}</option>`).join('');
+    } catch (e) { /* offline catalog is fine */ }
+  }, 250);
+});
+$('goto').onclick = async () => {
+  const name = $('target').value.trim(); if (!name) return;
+  try { const j = await api('/api/goto', {name}); log(`slewing to ${name} (${j.ra_hours.toFixed(3)}h ${j.dec_deg.toFixed(2)}°) [${j.source}]`); }
+  catch (e) { log('ERR ' + e.message); }
+};
+$('sync').onclick = async () => {
+  const name = $('target').value.trim(); if (!name) return;
+  try { await api('/api/sync', {name}); log(`synced on ${name}`); }
+  catch (e) { log('ERR ' + e.message); }
+};
+$('park').onclick = () => api('/api/park', {}).then(() => log('parking…')).catch(e => log('ERR ' + e.message));
+$('unpark').onclick = () => api('/api/unpark', {}).then(() => log('unparked, tracking on')).catch(e => log('ERR ' + e.message));
+document.querySelectorAll('#trackBtns button').forEach(b =>
+  b.onclick = () => api('/api/track', {mode: b.dataset.mode})
+    .then(j => log('tracking → ' + j.tracking_mode)).catch(e => log('ERR ' + e.message)));
+
+// claim
+$('claimBtn').onclick = () => api('/api/claim', {by: $('claimBy').value.trim() || 'operator'})
+  .then(j => log(`mount claimed by ${j.manual_override.by} — AstroCapture should pause`)).catch(e => log('ERR ' + e.message));
+$('releaseBtn').onclick = () => api('/api/release', {}).then(() => log('claim released')).catch(e => log('ERR ' + e.message));
+
+// optional night-queue panel
+(async () => {
+  const plan = new URLSearchParams(location.search).get('plan');
+  if (!plan) return;
+  try {
+    const j = await (await fetch('/api/plan?path=' + encodeURIComponent(plan))).json();
+    $('queue').innerHTML = (j.targets || []).map((t, i) =>
+      `<div class="queue-item"><span>${i + 1}. ${t.name} <small style="color:var(--dim)">prio ${t.priority}</small></span>
+       <button data-t="${t.name}">Slew</button></div>`).join('') || '<div>No targets.</div>';
+    $('queue').querySelectorAll('button').forEach(b => b.onclick = async () => {
+      try { await api('/api/goto', {name: b.dataset.t}); log('slewing to ' + b.dataset.t); }
+      catch (e) { log('ERR ' + e.message); }
+    });
+  } catch (e) { $('queue').innerHTML = '<div style="color:var(--bad)">could not load plan</div>'; }
+})();
+log('console ready');
+</script>
+</body>
+</html>

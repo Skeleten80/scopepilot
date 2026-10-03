@@ -1,0 +1,38 @@
+# ScopePilot config -- Mathias's NexStar 6SE, Stratford, Ontario
+#
+# Copy to ~/.scopepilot/config.yaml (or pass --config). CLI flags override.
+
+# sim | serial | indi
+#   sim    -- wire-level fake 6SE; exercises the real protocol driver
+#   serial -- direct NexStar protocol to the hand controller's PC port
+#   indi   -- second INDI client on AstroCapture's indiserver (no serial fight)
+backend: sim
+
+# Serial port for --backend serial.
+# Post-2016 NexStar+ hand controllers have mini-USB (PL2303) -> /dev/ttyUSB0 on
+# Linux. Older HCs have an RJ11 PC port -> USB-serial adapter.
+port: ""
+
+baud: 9600
+
+# INDI connection for --backend indi (matches AstroCapture's indiserver).
+indi_host: localhost
+indi_port: 7624
+indi_device: "Celestron GPS"
+
+# Observing site (used by `set-location` / sent to the HC).
+site_lat: 43.3767
+site_lon: -80.9809
+
+# Park position: home az/alt the mount slews to on `scopepilot park`.
+home_az: 0.0
+home_alt: 5.0
+
+# Default handpad jog rate (1-9).
+jog_rate: 5
+
+# Web console port for `scopepilot dash` / `scopepilot server`.
+server_port: 8765
+
+# Simulator slew speed, deg/s. 360 is snappy; ~4 matches the real 6SE.
+sim_slew_rate_dps: 360.0

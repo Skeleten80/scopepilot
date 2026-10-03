@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scopepilot"
+version = "0.1.0"
+description = "Telescope control system for the Celestron NexStar 6SE (works alongside AstroCapture)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+optional-dependencies = { serial = ["pyserial>=3.5"] }
+
+[project.scripts]
+scopepilot = "scopepilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scopepilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
