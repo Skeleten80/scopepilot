@@ -27,6 +27,10 @@ def default_pending_path() -> Path:
     return Path.home() / ".scopepilot" / "sync_stars.json"
 
 
+def default_user_objects_path() -> Path:
+    return Path.home() / ".scopepilot" / "user_objects.json"
+
+
 class AlignmentError(NexStarError):
     """The mount is not aligned -- align it from the hand controller first."""
 
@@ -53,6 +57,7 @@ class TelescopeController:
         home_az: float = 0.0,
         home_alt: float = 5.0,
         pending_path=None,
+        user_objects_path=None,
     ) -> None:
         self.backend = backend
         self.site_lat = site_lat
@@ -68,6 +73,12 @@ class TelescopeController:
         self._pending_path = (Path(pending_path) if pending_path
                               else default_pending_path())
         self._sync_stars: list[SyncStar] = self._read_pending()
+        # Undo GoTo: az/alt before the most recent goto.
+        self._pre_goto: tuple[float, float] | None = None
+        # User Objects (HC "User Objects" menu): named RA/Dec targets.
+        self._user_objects_path = (Path(user_objects_path)
+                                   if user_objects_path
+                                   else default_user_objects_path())
 
     # -- lifecycle -------------------------------------------------------
     def connect(self) -> "TelescopeController":
@@ -155,6 +166,7 @@ class TelescopeController:
                                    timeout=timeout, settle=settle)
         self.require_aligned()
         self.parked = False
+        self._record_pre_goto()
         self.backend.goto_radec(ra_hours, dec_deg)
         if not wait:
             return False
@@ -162,6 +174,26 @@ class TelescopeController:
         if ok and settle > 0:
             time.sleep(settle)
         return ok
+
+    def _record_pre_goto(self) -> None:
+        """Remember the current az/alt for Undo GoTo."""
+        try:
+            st = self.backend.status()
+            self._pre_goto = (st.az_deg, st.alt_deg)
+        except NexStarError:
+            self._pre_goto = None
+
+    def undo_goto(
+        self, wait: bool = True, timeout: float = 300.0
+    ) -> bool:
+        """Slew back to the position before the last goto (HC Undo GoTo).
+
+        Calling it twice returns to the goto target (a toggle).
+        """
+        self._require_connected()
+        if self._pre_goto is None:
+            raise NexStarError("no previous goto to undo")
+        return self.goto_altaz(*self._pre_goto, wait=wait, timeout=timeout)
 
     def goto_altaz(
         self,
@@ -173,6 +205,7 @@ class TelescopeController:
     ) -> bool:
         self._require_connected()
         self.parked = False
+        self._record_pre_goto()
         self.backend.goto_altaz(az_deg, alt_deg)
         if not wait:
             return False
@@ -306,6 +339,113 @@ class TelescopeController:
         self._require_connected()
         self.backend.set_hc_location(lat_deg, lon_deg)
         self.site_lat, self.site_lon = lat_deg, lon_deg
+
+    # -- hand-controller info / utilities --------------------------------------
+    def hc_info(self) -> dict:
+        """Hand-controller info panel: model, firmware, clock, GPS, bus."""
+        self._require_connected()
+        st = self.status()
+        details = self.backend.probe_details()
+        return {
+            "model": st.model or details.get("model"),
+            "hc_version": details.get("hc_version"),
+            "hc_time": details.get("hc_time"),
+            "bus": details.get("bus"),
+            "gps_linked": details.get("gps_linked"),
+            "tracking": st.tracking_mode,
+            "aligned": st.aligned,
+        }
+
+    def set_backlash(self, axis: str, direction: int, value: int) -> None:
+        """Anti-backlash 0-99 for one axis/direction (HC Utilities menu)."""
+        self._require_connected()
+        self.backend.set_backlash(axis, direction, value)
+
+    def get_backlash(self, axis: str, direction: int) -> int:
+        self._require_connected()
+        return self.backend.get_backlash(axis, direction)
+
+    def set_cordwrap(self, enabled: bool) -> None:
+        self._require_connected()
+        self.backend.set_cordwrap(enabled)
+
+    def cordwrap_enabled(self) -> bool:
+        self._require_connected()
+        return self.backend.cordwrap_enabled()
+
+    # -- user objects (HC "User Objects" menu) ----------------------------------
+    def _read_user_objects(self) -> dict[str, dict]:
+        try:
+            raw = json.loads(self._user_objects_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        out: dict[str, dict] = {}
+        for item in raw if isinstance(raw, list) else []:
+            name = str(item.get("name", "")).strip()
+            try:
+                ra = float(item["ra_hours"]) % 24.0
+                dec = float(item["dec_deg"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if name and -90.0 <= dec <= 90.0:
+                out[name.lower()] = {"name": name, "ra_hours": ra,
+                                     "dec_deg": dec}
+        return out
+
+    def _write_user_objects(self, objs: dict[str, dict]) -> None:
+        self._user_objects_path.parent.mkdir(parents=True, exist_ok=True)
+        self._user_objects_path.write_text(
+            json.dumps(sorted(objs.values(), key=lambda o: o["name"].lower()),
+                       indent=2))
+
+    def list_user_objects(self) -> list[dict]:
+        """All saved user objects, sorted by name."""
+        return sorted(self._read_user_objects().values(),
+                      key=lambda o: o["name"].lower())
+
+    def add_user_object(
+        self, name: str, ra_hours: float, dec_deg: float
+    ) -> dict:
+        """Save a named RA/Dec target (HC "User Objects" -> Save)."""
+        clean = name.strip()
+        if not clean:
+            raise ValueError("user object name must not be empty")
+        if not -90.0 <= float(dec_deg) <= 90.0:
+            raise ValueError("dec_deg must be between -90 and +90")
+        objs = self._read_user_objects()
+        objs[clean.lower()] = {"name": clean,
+                               "ra_hours": float(ra_hours) % 24.0,
+                               "dec_deg": float(dec_deg)}
+        self._write_user_objects(objs)
+        return objs[clean.lower()]
+
+    def save_current_as(self, name: str) -> dict:
+        """Save the current pointing as a user object (HC "Save Sky Object")."""
+        self._require_connected()
+        st = self.status()
+        return self.add_user_object(name, st.ra_hours, st.dec_deg)
+
+    def delete_user_object(self, name: str) -> None:
+        """Delete a user object by name."""
+        objs = self._read_user_objects()
+        key = name.strip().lower()
+        if key not in objs:
+            raise ValueError(f"no user object named {name!r}")
+        del objs[key]
+        self._write_user_objects(objs)
+
+    def goto_user_object(
+        self, name: str, wait: bool = True, timeout: float = 300.0
+    ) -> tuple[float, float, bool]:
+        """Slew to a saved user object; returns (ra_hours, dec_deg, settled)."""
+        objs = self._read_user_objects()
+        key = name.strip().lower()
+        if key not in objs:
+            raise ValueError(f"no user object named {name!r}")
+        obj = objs[key]
+        settled = self.goto_radec(obj["ra_hours"], obj["dec_deg"],
+                                  wait=wait, timeout=timeout)
+        return obj["ra_hours"], obj["dec_deg"], settled
 
     # -- software pointing model (Depth 1: no HC menus) ----------------------
     def _read_pending(self) -> list[SyncStar]:

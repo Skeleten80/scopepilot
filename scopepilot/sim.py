@@ -124,6 +124,8 @@ class SimNexStar(threading.Thread):
         self._goto_kind: str | None = None  # "radec" | "altaz"
         self._goto_target = (0.0, 0.0)
         self._jog = {"az": 0.0, "alt": 0.0}  # signed deg/s
+        self._backlash = {"az": [0, 0], "alt": [0, 0]}  # [pos, neg] 0-99
+        self._cordwrap = False
         self._time = encode_time(2026, 10, 3, 21, 0, 0, -4, True)
         self._location = encode_location(lat_deg, lon_deg)
         self._last = time.monotonic()
@@ -275,6 +277,24 @@ class SimNexStar(threading.Thread):
                 abs(v) > 1e-9 for v in self._jog.values()
             )
             return b"\x00" if slewing else b"\xff"
+        if aux in (0x10, 0x11):  # MC_SET_POS/NEG_BACKLASH
+            with self._lock:
+                self._backlash[axis][0 if aux == 0x10 else 1] = min(99, d1)
+            return b""
+        if aux in (0x40, 0x41):  # MC_GET_POS/NEG_BACKLASH
+            with self._lock:
+                return bytes([self._backlash[axis][0 if aux == 0x40 else 1]])
+        if aux == 0x38:  # MC_ENABLE_CORDWRAP
+            with self._lock:
+                self._cordwrap = True
+            return b""
+        if aux == 0x39:  # MC_DISABLE_CORDWRAP
+            with self._lock:
+                self._cordwrap = False
+            return b""
+        if aux == 0x3B:  # MC_POLL_CORDWRAP
+            with self._lock:
+                return b"\x01" if self._cordwrap else b"\x00"
         if aux == 0x01:  # MC_GET_POSITION -> 24-bit fraction
             frac = (
                 az_deg_to_frac(self.az_deg)

@@ -1,333 +1,697 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ScopePilot — Telescope Console</title>
+<title>ScopePilot — Telescope Dashboard</title>
 <style>
-  :root { --bg:#0b0e14; --panel:#141926; --panel2:#1a2133; --line:#263049;
-          --txt:#dbe4f3; --dim:#8b98b4; --acc:#6ea8fe; --ok:#4ade80;
-          --warn:#fbbf24; --bad:#f87171; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt);
-         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  header { display:flex; align-items:center; gap:12px; padding:12px 18px;
-           border-bottom:1px solid var(--line); background:var(--panel); }
-  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
-  header h1 span { color:var(--acc); }
-  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); }
-  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
-  .badge { font-size:12px; padding:3px 10px; border-radius:20px;
-            background:var(--panel2); border:1px solid var(--line); color:var(--dim); }
-  .badge.ok { color:var(--ok); border-color:#1f4d33; }
-  .badge.warn { color:var(--warn); border-color:#5c4510; }
-  .badge.bad { color:var(--bad); border-color:#5c2020; }
-  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
-         gap:14px; padding:16px; max-width:1200px; margin:0 auto; }
-  .card { background:var(--panel); border:1px solid var(--line);
-          border-radius:12px; padding:14px 16px; }
-  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:1px;
-             color:var(--dim); margin:0 0 12px; }
-  .pos { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .pos .field { background:var(--panel2); border-radius:8px; padding:8px 10px; }
-  .pos .k { font-size:11px; color:var(--dim); }
-  .pos .v { font-size:19px; font-variant-numeric:tabular-nums; margin-top:2px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  button { background:var(--panel2); color:var(--txt); border:1px solid var(--line);
-           border-radius:8px; padding:9px 14px; font-size:14px; cursor:pointer; }
-  button:hover { border-color:var(--acc); }
-  button.primary { background:#1d3a6e; border-color:#2c5296; }
-  button.danger { background:#4a1f1f; border-color:#7a2e2e; }
-  button.active { background:#1d3a6e; border-color:var(--acc); color:#fff; }
-  button:disabled { opacity:.45; cursor:default; }
-  input[type=text], input[type=number] { background:var(--panel2); color:var(--txt);
-      border:1px solid var(--line); border-radius:8px; padding:9px 12px;
-      font-size:14px; width:100%; }
-  input[type=range] { width:100%; accent-color:var(--acc); }
-  .dpad { display:grid; grid-template-columns:repeat(3,64px); gap:6px;
-          justify-content:center; margin:6px 0; }
-  .dpad button { height:56px; font-size:20px; padding:0; user-select:none;
-                 -webkit-user-select:none; touch-action:none; }
-  #log { height:150px; overflow-y:auto; background:#080b10; border:1px solid var(--line);
-         border-radius:8px; padding:8px 10px; font-family:ui-monospace,monospace;
-         font-size:12px; color:var(--dim); }
-  #log div { margin:2px 0; }
-  #log .t { color:#5b6b8c; margin-right:8px; }
-  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--line);
-          border-top-color:var(--acc); border-radius:50%;
-          animation:sp 0.8s linear infinite; vertical-align:-1px; }
-  @keyframes sp { to { transform:rotate(360deg); } }
-  .hidden { display:none !important; }
-  .queue-item { display:flex; justify-content:space-between; align-items:center;
-                padding:7px 4px; border-bottom:1px solid var(--line); font-size:14px; }
+:root{
+  --bg:#0b1220; --card:#141d31; --card2:#1a2440; --text:#eef2fb; --dim:#9aa7c4;
+  --accent:#5aa2ff; --ok:#43d17c; --warn:#ffb347; --danger:#ff6b6b;
+  --line:#263353; --big:2.1rem;
+}
+body.night{
+  --bg:#0a0000; --card:#160606; --card2:#200a0a; --text:#ff9a8a; --dim:#b05545;
+  --accent:#ff5a4a; --ok:#7ce8a0; --warn:#ffb347; --danger:#ff2222;
+  --line:#3d1414;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:17px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header.topbar{position:sticky;top:0;z-index:10;background:var(--card);
+  border-bottom:1px solid var(--line);padding:.7rem 1rem;
+  display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+.brand{font-size:1.35rem;font-weight:700}
+.brand small{color:var(--dim);font-weight:400}
+.pills{display:flex;gap:.45rem;flex-wrap:wrap;margin-left:auto}
+.pill{padding:.3rem .7rem;border-radius:999px;background:var(--card2);
+  border:1px solid var(--line);font-size:.95rem}
+.pill.ok{border-color:var(--ok);color:var(--ok)}
+.pill.bad{border-color:var(--danger);color:var(--danger)}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));
+  gap:1rem;max-width:1500px;margin:0 auto;padding:1rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:1.2rem 1.3rem}
+.card h2{margin:0 0 .9rem;font-size:1.25rem}
+.card h2 small{color:var(--dim);font-weight:400;font-size:.95rem}
+.card h3{margin:1.2rem 0 .5rem;font-size:1.05rem;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.bigcoords{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-bottom:.6rem}
+.bigcoords label{color:var(--dim);font-size:.95rem}
+.big{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--big);
+  font-weight:700;letter-spacing:.02em}
+.coords2{display:flex;gap:1.4rem;flex-wrap:wrap;color:var(--dim);font-size:1.05rem}
+.coords2 b{color:var(--text);font-family:ui-monospace,Menlo,monospace}
+.slewing{color:var(--warn);font-weight:700}
+.row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.7rem}
+button{font-size:1.02rem;padding:.65rem 1.1rem;border-radius:12px;border:1px solid var(--line);
+  background:var(--card2);color:var(--text);cursor:pointer;min-height:48px}
+button:hover{border-color:var(--accent)}
+button:disabled{opacity:.4;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:700}
+body.night button.primary{color:#1a0505}
+button.danger{border-color:var(--danger);color:var(--danger)}
+button.ghost{background:transparent}
+input[type=text]{font-size:1.05rem;padding:.65rem .9rem;border-radius:12px;
+  border:1px solid var(--line);background:var(--card2);color:var(--text);width:100%}
+input[type=range]{width:100%;accent-color:var(--accent);height:40px}
+.pad{display:grid;grid-template-columns:repeat(3,84px);grid-template-rows:repeat(3,84px);
+  gap:.5rem;justify-content:center;margin:.4rem 0 1rem}
+.pad button{font-size:1.9rem;padding:0;min-height:0;border-radius:16px}
+.pad .stop{font-size:1.1rem;font-weight:700;color:var(--danger)}
+.ratewords{display:flex;justify-content:space-between;color:var(--dim);font-size:.9rem}
+.list{display:flex;flex-direction:column;gap:.45rem;margin-top:.5rem}
+.item{display:flex;align-items:center;gap:.7rem;background:var(--card2);
+  border:1px solid var(--line);border-radius:12px;padding:.55rem .8rem}
+.item .grow{flex:1;min-width:0}
+.item .name{font-weight:600;font-size:1.08rem}
+.item .sub{color:var(--dim);font-size:.93rem}
+.item button{min-height:44px;padding:.4rem .9rem;font-size:.98rem}
+.hint{color:var(--dim);font-size:1rem}
+.model-status{font-size:1.15rem;padding:.7rem .9rem;border-radius:12px;
+  background:var(--card2);border:1px solid var(--line);margin-bottom:.8rem}
+.model-status b{color:var(--ok)}
+.seg{display:flex;gap:.45rem;flex-wrap:wrap}
+.seg button.active{background:var(--accent);border-color:var(--accent);
+  color:#06121f;font-weight:700}
+body.night .seg button.active{color:#1a0505}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:.3rem 1rem;font-size:1.05rem}
+.kv dt{color:var(--dim)} .kv dd{margin:0;font-family:ui-monospace,Menlo,monospace}
+.bl-row{display:grid;grid-template-columns:130px 1fr 52px;gap:.7rem;
+  align-items:center;margin:.4rem 0}
+.bl-row label{font-size:1.02rem}
+.bl-row output{font-family:ui-monospace,Menlo,monospace;text-align:right}
+.switch{display:flex;align-items:center;gap:.7rem;font-size:1.08rem;cursor:pointer}
+.switch input{width:26px;height:26px;accent-color:var(--accent)}
+details.logwrap{max-width:1500px;margin:0 auto 2rem;padding:0 1rem}
+details.logwrap summary{cursor:pointer;color:var(--dim);font-size:1rem}
+#log{background:#05080f;border:1px solid var(--line);border-radius:12px;
+  padding:.8rem;font-family:ui-monospace,Menlo,monospace;font-size:.92rem;
+  max-height:220px;overflow-y:auto;white-space:pre-wrap}
+body.night #log{background:#0d0202}
+.statusline{font-size:1rem;color:var(--dim)}
+.statusline b{color:var(--text)}
 </style>
 </head>
 <body>
-<header>
-  <div class="dot" id="conn"></div>
-  <h1>ScopePilot <span>// telescope console</span></h1>
-  <span class="badge" id="backend">…</span>
-  <span class="badge" id="claimBadge">manual control free</span>
-  <span style="flex:1"></span>
-  <span class="badge" id="clock"></span>
+<header class="topbar">
+  <div class="brand">🔭 ScopePilot <small id="hdr-model"></small></div>
+  <div class="pills">
+    <span class="pill" id="pill-conn">connecting…</span>
+    <span class="pill" id="pill-track"></span>
+    <span class="pill" id="pill-model">model: off</span>
+  </div>
+  <button id="night-toggle" class="ghost" title="Red light for dark adaptation">🌙 Night</button>
 </header>
+
 <main>
   <section class="card">
-    <h2>Position</h2>
-    <div class="pos">
-      <div class="field"><div class="k">RA (J2000-ish)</div><div class="v" id="ra">—</div></div>
-      <div class="field"><div class="k">Dec</div><div class="v" id="dec">—</div></div>
-      <div class="field"><div class="k">Azimuth</div><div class="v" id="az">—</div></div>
-      <div class="field"><div class="k">Altitude</div><div class="v" id="alt">—</div></div>
+    <h2>Where it&rsquo;s pointing</h2>
+    <div class="bigcoords">
+      <div><label>Right ascension</label><div class="big" id="ra">--:--:--</div></div>
+      <div><label>Declination</label><div class="big" id="dec">--°--′--″</div></div>
+    </div>
+    <div class="coords2">
+      <span>Altitude <b id="alt">--</b>°</span>
+      <span>Azimuth <b id="az">--</b>°</span>
+      <span id="slew-ind" class="slewing"></span>
     </div>
     <div class="row">
-      <span class="badge" id="aligned">alignment ?</span>
-      <span class="badge" id="tracking">tracking ?</span>
-      <span class="badge hidden" id="slewing"><span class="spin"></span> slewing</span>
-      <span class="badge warn hidden" id="parked">parked</span>
+      <button id="btn-identify">🔍 What am I looking at?</button>
+      <span class="statusline" id="identify-result"></span>
     </div>
-    <div class="row"><span class="badge" id="note" style="display:none"></span></div>
   </section>
 
   <section class="card">
-    <h2>Handpad</h2>
-    <div class="dpad">
-      <span></span><button data-dir="up">▲</button><span></span>
-      <button data-dir="left">◀</button><button data-dir="stop" class="danger">■</button><button data-dir="right">▶</button>
-      <span></span><button data-dir="down">▼</button><span></span>
+    <h2>Move the telescope</h2>
+    <div class="pad" id="pad">
+      <span></span><button data-dir="up" title="Up">▲</button><span></span>
+      <button data-dir="left" title="Left">◀</button>
+      <button class="stop" id="pad-stop" title="Stop">■</button>
+      <button data-dir="right" title="Right">▶</button>
+      <span></span><button data-dir="down" title="Down">▼</button><span></span>
     </div>
-    <div class="row"><label style="font-size:12px;color:var(--dim)">rate <b id="rateVal">5</b> / 9</label></div>
-    <input type="range" id="rate" min="1" max="9" value="5">
-    <div class="row"><button id="abort" class="danger" style="flex:1">ABORT — cancel goto &amp; stop</button></div>
+    <label for="rate">Slew speed: <b id="rate-label">5 · medium</b></label>
+    <input type="range" id="rate" min="1" max="9" value="5" step="1">
+    <div class="ratewords"><span>crawl</span><span>medium</span><span>fastest</span></div>
+    <div class="row">
+      <button id="btn-stop" class="danger">⏹ Stop everything</button>
+    </div>
   </section>
 
   <section class="card">
-    <h2>GoTo</h2>
-    <input type="text" id="target" list="targets" placeholder="M51, M13, M42…" autocomplete="off">
-    <datalist id="targets"></datalist>
+    <h2>Go to something</h2>
+    <input type="text" id="search" placeholder="Search: M31, Ring Nebula, Jupiter…" autocomplete="off">
+    <div class="list" id="search-results"></div>
+    <h3>Tonight&rsquo;s best <button id="btn-tonight" class="ghost" title="Refresh">↻</button></h3>
+    <div class="statusline" id="tonight-src"></div>
+    <div class="list" id="tonight-list"></div>
+    <div class="statusline" id="center-status" style="margin-top:.5rem"></div>
+    <h3>My saved objects</h3>
     <div class="row">
-      <button id="goto" class="primary">Slew</button>
-      <button id="sync">Sync here</button>
+      <input type="text" id="newobj-name" placeholder="Name for the current view" style="flex:1;min-width:180px">
+      <button id="btn-save-current">💾 Save current view</button>
     </div>
-    <div class="row">
-      <button id="park">Park</button>
-      <button id="unpark">Unpark</button>
+    <div class="list" id="user-objects"></div>
+  </section>
+
+  <section class="card">
+    <h2>Alignment <small>— no hand controller needed</small></h2>
+    <div class="model-status" id="model-status">checking…</div>
+    <div id="align-wizard">
+      <p class="hint">Center 2–3 bright stars in the eyepiece and record each one.
+        Afterwards the mount knows where everything is — no menus on the hand controller.</p>
+      <div class="row"><button id="btn-align-stars" class="primary">1 · Show alignment stars</button></div>
+      <div class="list" id="align-star-list"></div>
+      <div class="row">
+        <button id="btn-align-fit">2 · Build pointing model</button>
+        <button id="btn-align-clear" class="ghost danger">Clear model</button>
+      </div>
     </div>
-    <h2 style="margin-top:16px">Tracking</h2>
-    <div class="row" id="trackBtns">
+  </section>
+
+  <section class="card">
+    <h2>Telescope</h2>
+    <h3>Tracking</h3>
+    <div class="seg" id="track-seg">
       <button data-mode="off">Off</button>
-      <button data-mode="alt-az">Alt-Az</button>
-      <button data-mode="eq-north">EQ N</button>
-      <button data-mode="eq-south">EQ S</button>
+      <button data-mode="alt-az">Stars (alt-az)</button>
+      <button data-mode="eq-north">EQ north</button>
+      <button data-mode="eq-south">EQ south</button>
     </div>
+    <h3>Position</h3>
+    <div class="row">
+      <button id="btn-park">🅿 Park</button>
+      <button id="btn-unpark">Unpark</button>
+      <button id="btn-undo" disabled>↩ Undo GoTo</button>
+    </div>
+    <h3>Hand controller</h3>
+    <dl class="kv" id="hc-info"><dt>loading…</dt><dd></dd></dl>
+    <div class="row">
+      <button id="btn-hc-sync">🕐 Set HC clock + site from this computer</button>
+    </div>
+    <h3>Anti-backlash <small style="text-transform:none">HC Utilities menu</small></h3>
+    <div id="backlash-rows"></div>
+    <h3>Cord wrap</h3>
+    <label class="switch"><input type="checkbox" id="cordwrap">
+      <span>Keep cables from winding up</span></label>
   </section>
 
   <section class="card">
-    <h2>Pointing model <span style="font-weight:normal;text-transform:none;letter-spacing:0">(no HC menus)</span></h2>
-    <div id="pointingStatus" style="font-size:13px;color:var(--dim);margin-bottom:8px">…</div>
-    <div style="font-size:12px;color:var(--dim);margin-bottom:8px">Center a star in the eyepiece, type its name above, then Sync star. Fit after 2+ stars.</div>
+    <h2>Co-observing</h2>
+    <p class="hint">When you drive the mount by hand, claim it so an automated
+      imaging run (AstroCapture) pauses instead of fighting your slew.</p>
     <div class="row">
-      <button id="syncStarBtn">Sync star here</button>
-      <button id="fitBtn">Fit model</button>
-      <button id="clearModelBtn">Clear</button>
+      <button id="btn-claim">✋ I&rsquo;m driving — pause automation</button>
+      <button id="btn-release" class="ghost">Release</button>
     </div>
-    <div class="row">
-      <button id="centerBtn" class="primary" style="flex:1">Center on target (plate-solve loop)</button>
-    </div>
-    <div id="centerStatus" style="font-size:13px;color:var(--dim);margin-top:6px"></div>
-  </section>
-
-  <section class="card" id="queueCard">
-    <h2>AstroCapture night queue</h2>    <div id="queue"><div style="color:var(--dim);font-size:13px">
-      Add <code>?plan=/path/to/night_queue.yaml</code> to the URL to load it.</div></div>
-  </section>
-
-  <section class="card">
-    <h2>Manual override</h2>
-    <div style="font-size:13px;color:var(--dim);margin-bottom:10px">
-      While claimed, AstroCapture's sequencer should pause instead of
-      slewing against you.</div>
-    <div class="row">
-      <input type="text" id="claimBy" placeholder="your name" style="flex:1;min-width:120px">
-      <button id="claimBtn" class="primary">Claim</button>
-      <button id="releaseBtn">Release</button>
-    </div>
-  </section>
-
-  <section class="card" style="grid-column:1/-1">
-    <h2>Event log</h2>
-    <div id="log"></div>
+    <div class="statusline" id="claim-status" style="margin-top:.5rem"></div>
   </section>
 </main>
 
+<details class="logwrap">
+  <summary>Activity log</summary>
+  <div id="log"></div>
+</details>
+
 <script>
-const $ = id => document.getElementById(id);
-function log(msg) {
-  const el = document.createElement('div');
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+function log(msg){
+  const el = $("log");
   const t = new Date().toLocaleTimeString();
-  el.innerHTML = `<span class="t">${t}</span>${msg}`;
-  const box = $('log'); box.prepend(el);
-  while (box.children.length > 60) box.lastChild.remove();
+  el.textContent += `[${t}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
 }
-async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body) });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
-  return j;
+
+async function api(path, opts){
+  const res = await fetch(path, {
+    method: (opts && opts.method) || "GET",
+    headers: {"Content-Type": "application/json"},
+    body: opts && opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!data.ok) throw new Error(data.error || `request failed (${res.status})`);
+  return data;
 }
-function fmtRA(h) {
-  if (h == null) return '—';
+
+const RATE_WORDS = ["", "barely moving", "very slow", "slow", "gentle",
+  "medium", "brisk", "fast", "very fast", "fastest"];
+function slewRate(){ return parseInt($("rate").value, 10); }
+
+function fmtRA(h){
   h = ((h % 24) + 24) % 24;
-  const H = Math.floor(h), M = Math.floor((h - H) * 60), S = Math.floor((((h - H) * 60) - M) * 60);
-  return `${String(H).padStart(2,'0')}:${String(M).padStart(2,'0')}:${String(S).padStart(2,'0')}`;
+  const H = Math.floor(h), m = Math.floor((h - H) * 60);
+  const s = Math.round((((h - H) * 60) - m) * 60);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(H)}:${p(m)}:${p(s)}`;
 }
-function fmtDec(d) {
-  if (d == null) return '—';
-  const s = d < 0 ? '−' : '+'; d = Math.abs(d);
-  const D = Math.floor(d), M = Math.floor((d - D) * 60);
-  return `${s}${String(D).padStart(2,'0')}°${String(M).padStart(2,'0')}′`;
+function fmtDec(d){
+  const sign = d < 0 ? "-" : "+";
+  d = Math.abs(d);
+  const D = Math.floor(d), m = Math.floor((d - D) * 60);
+  const s = Math.round((((d - D) * 60) - m) * 60);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${sign}${p(D)}°${p(m)}′${p(s)}″`;
 }
-function fmtDeg(d) { return d == null ? '—' : d.toFixed(2) + '°'; }
 
-let lastState = null;
-async function poll() {
-  try {
-    const r = await fetch('/api/state'); const s = await r.json();
-    lastState = s;
-    $('conn').className = 'dot' + (s.connected ? ' on' : '');
-    $('backend').textContent = `${s.backend} · ${s.model || '?'}`;
-    $('ra').textContent = fmtRA(s.ra_hours);
-    $('dec').textContent = fmtDec(s.dec_deg);
-    $('az').textContent = fmtDeg(s.az_deg);
-    $('alt').textContent = fmtDeg(s.alt_deg);
-    const al = $('aligned');
-    al.textContent = s.aligned ? 'aligned ✓' : 'not aligned';
-    al.className = 'badge ' + (s.aligned ? 'ok' : 'bad');
-    $('tracking').textContent = 'tracking: ' + s.tracking_mode;
-    $('slewing').classList.toggle('hidden', !s.slewing);
-    $('parked').classList.toggle('hidden', !s.parked);
-    const note = $('note');
-    if (s.note) { note.style.display = ''; note.textContent = s.note; }
-    else note.style.display = 'none';
-    document.querySelectorAll('#trackBtns button').forEach(b =>
-      b.classList.toggle('active', b.dataset.mode === s.tracking_mode));
-    const mo = s.manual_override || {};
-    const cb = $('claimBadge');
-    cb.textContent = mo.claimed ? `claimed by ${mo.by}` : 'manual control free';
-    cb.className = 'badge ' + (mo.claimed ? 'warn' : '');
-    $('clock').textContent = new Date(s.server_time * 1000).toLocaleTimeString();
-  } catch (e) { $('conn').className = 'dot'; }
-}
-setInterval(poll, 1000); poll();
-
-// handpad: press-and-hold jog
-document.querySelectorAll('.dpad button').forEach(b => {
-  const dir = b.dataset.dir;
-  if (dir === 'stop') { b.onclick = () => api('/api/jog_stop', {}).then(() => log('jog stopped')).catch(e => log('ERR ' + e.message)); return; }
-  const rate = () => parseInt($('rate').value, 10);
-  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture(e.pointerId);
-    api('/api/jog', {direction: dir, rate: rate()}).catch(err => log('ERR ' + err.message)); });
-  const stop = () => api('/api/jog_stop', {}).catch(err => log('ERR ' + err.message));
-  b.addEventListener('pointerup', stop); b.addEventListener('pointercancel', stop);
-});
-$('rate').addEventListener('input', () => $('rateVal').textContent = $('rate').value);
-$('abort').onclick = () => api('/api/stop', {}).then(() => log('ABORT: goto cancelled, axes stopped')).catch(e => log('ERR ' + e.message));
-
-// goto / sync
-let searchTimer = null;
-$('target').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(async () => {
-    const q = $('target').value.trim(); if (q.length < 2) return;
-    try {
-      const j = await (await fetch('/api/targets?q=' + encodeURIComponent(q))).json();
-      $('targets').innerHTML = (j.results || []).map(r =>
-        `<option value="${r.name}">${r.label || ''} · ${r.source}</option>`).join('');
-    } catch (e) { /* offline catalog is fine */ }
-  }, 250);
-});
-$('goto').onclick = async () => {
-  const name = $('target').value.trim(); if (!name) return;
-  try { const j = await api('/api/goto', {name}); log(`slewing to ${name} (${j.ra_hours.toFixed(3)}h ${j.dec_deg.toFixed(2)}°) [${j.source}]`); }
-  catch (e) { log('ERR ' + e.message); }
-};
-$('sync').onclick = async () => {
-  const name = $('target').value.trim(); if (!name) return;
-  try { await api('/api/sync', {name}); log(`synced on ${name}`); }
-  catch (e) { log('ERR ' + e.message); }
-};
-$('park').onclick = () => api('/api/park', {}).then(() => log('parking…')).catch(e => log('ERR ' + e.message));
-$('unpark').onclick = () => api('/api/unpark', {}).then(() => log('unparked, tracking on')).catch(e => log('ERR ' + e.message));
-document.querySelectorAll('#trackBtns button').forEach(b =>
-  b.onclick = () => api('/api/track', {mode: b.dataset.mode})
-    .then(j => log('tracking → ' + j.tracking_mode)).catch(e => log('ERR ' + e.message)));
-
-// claim
-$('claimBtn').onclick = () => api('/api/claim', {by: $('claimBy').value.trim() || 'operator'})
-  .then(j => log(`mount claimed by ${j.manual_override.by} — AstroCapture should pause`)).catch(e => log('ERR ' + e.message));
-$('releaseBtn').onclick = () => api('/api/release', {}).then(() => log('claim released')).catch(e => log('ERR ' + e.message));
-
-// optional night-queue panel
-(async () => {
-  const plan = new URLSearchParams(location.search).get('plan');
-  if (!plan) return;
-  try {
-    const j = await (await fetch('/api/plan?path=' + encodeURIComponent(plan))).json();
-    $('queue').innerHTML = (j.targets || []).map((t, i) =>
-      `<div class="queue-item"><span>${i + 1}. ${t.name} <small style="color:var(--dim)">prio ${t.priority}</small></span>
-       <button data-t="${t.name}">Slew</button></div>`).join('') || '<div>No targets.</div>';
-    $('queue').querySelectorAll('button').forEach(b => b.onclick = async () => {
-      try { await api('/api/goto', {name: b.dataset.t}); log('slewing to ' + b.dataset.t); }
-      catch (e) { log('ERR ' + e.message); }
+async function refreshState(){
+  try{
+    const s = await api("/api/state");
+    $("ra").textContent = fmtRA(s.ra_hours);
+    $("dec").textContent = fmtDec(s.dec_deg);
+    $("alt").textContent = s.alt_deg.toFixed(1);
+    $("az").textContent = s.az_deg.toFixed(1);
+    $("slew-ind").textContent = s.slewing ? "● slewing…" : "";
+    const pc = $("pill-conn");
+    pc.textContent = s.connected ? "● connected" : "○ not connected";
+    pc.className = "pill " + (s.connected ? "ok" : "bad");
+    $("hdr-model").textContent = s.model ? `· ${s.model}` : "";
+    const pt = $("pill-track");
+    pt.textContent = "tracking: " + (s.tracking_mode || "?");
+    pt.className = "pill" + (s.tracking_mode === "off" ? " bad" : " ok");
+    const pm = $("pill-model");
+    const modelOn = !!(s.note && s.note.includes("model"));
+    pm.textContent = modelOn ? "model: on" : "model: off";
+    pm.className = "pill" + (modelOn ? " ok" : "");
+    document.querySelectorAll("#track-seg button").forEach((b) => {
+      const mode = b.dataset.mode;
+      const on = (s.tracking_mode === "off" && mode === "off") ||
+        (s.tracking_mode === "alt-az" && mode === "alt-az") ||
+        (s.tracking_mode === "eq-north" && mode === "eq-north") ||
+        (s.tracking_mode === "eq-south" && mode === "eq-south");
+      b.classList.toggle("active", !!on);
     });
-  } catch (e) { $('queue').innerHTML = '<div style="color:var(--bad)">could not load plan</div>'; }
-})();
-// pointing model
-async function refreshPointing() {
-  try {
-    const j = await (await fetch('/api/pointing')).json();
-    const p = j.pointing || {};
-    $('pointingStatus').textContent = p.active
-      ? `active: ${p.stars} star(s), RMS ${p.rms_arcmin.toFixed(2)}′, Δaz ${p.az_offset_deg.toFixed(3)}° Δalt ${p.alt_offset_deg.toFixed(3)}°`
-      : `no model (${p.stars || 0} star(s) recorded)`;
-  } catch (e) { /* ignore */ }
+    $("btn-undo").disabled = !s.undo_available;
+    const claim = s.manual_override && s.manual_override.claimed;
+    $("claim-status").innerHTML = claim
+      ? `Manual control claimed by <b>${s.manual_override.by}</b> — automation should pause.`
+      : "Free — automation may run.";
+  }catch(e){ log("state: " + e.message); }
 }
-setInterval(refreshPointing, 2000); refreshPointing();
-$('syncStarBtn').onclick = async () => {
-  const name = $('target').value.trim(); if (!name) { log('type a star name first'); return; }
-  try { const j = await api('/api/sync-star', {name}); log(`sync star ${name} recorded (${j.pending} total)`); refreshPointing(); }
-  catch (e) { log('ERR ' + e.message); }
-};
-$('fitBtn').onclick = async () => {
-  try { const j = await api('/api/align-fit', {}); const p = j.pointing; log(`model fit: ${p.stars} stars, RMS ${p.rms_arcmin.toFixed(2)}′`); refreshPointing(); }
-  catch (e) { log('ERR ' + e.message); }
-};
-$('clearModelBtn').onclick = () => api('/api/align-clear', {}).then(() => { log('pointing model cleared'); refreshPointing(); }).catch(e => log('ERR ' + e.message));
-let centerSeen = 0;
-$('centerBtn').onclick = async () => {
-  const name = $('target').value.trim(); if (!name) { log('type a target name first'); return; }
-  try { await api('/api/center', {name}); centerSeen = 0; $('centerStatus').textContent = 'centering…'; log('closed-loop centering started for ' + name); }
-  catch (e) { log('ERR ' + e.message); }
-};
-setInterval(async () => {
-  try {
-    const j = await (await fetch('/api/center-status')).json();
-    if (!j.running && !j.report && centerSeen === 0) return;
-    (j.events || []).slice(centerSeen).forEach(e => log(e));
-    centerSeen = (j.events || []).length;
-    if (!j.running && j.report) {
-      $('centerStatus').textContent = j.report.converged
-        ? `centered: ${j.report.final_sep_arcmin.toFixed(2)}′ in ${j.report.iters} iter(s)`
-        : 'centering did not converge — see log';
-    } else if (j.running) {
-      $('centerStatus').textContent = 'centering…';
-    }
-  } catch (e) { /* ignore */ }
-}, 2000);
 
-log('console ready');
+async function refreshPointing(){
+  try{
+    const d = await api("/api/pointing");
+    const p = d.pointing;
+    const el = $("model-status");
+    if(p && p.active){
+      el.innerHTML = `Pointing model <b>active</b> — ${p.n_stars} stars, ` +
+        `RMS ${p.rms_arcmin.toFixed(1)}′ ` +
+        `(az ${p.az_offset_deg.toFixed(2)}°, alt ${p.alt_offset_deg.toFixed(2)}°)`;
+    }else{
+      el.textContent = "No pointing model — gotos use the hand controller's alignment.";
+    }
+  }catch(e){ $("model-status").textContent = "Pointing status unavailable."; }
+}
+
+async function refreshTonight(){
+  const list = $("tonight-list");
+  list.innerHTML = "";
+  try{
+    const d = await api("/api/tonight");
+    $("tonight-src").textContent =
+      d.source === "astrocapture-catalog" ? "Ranked by AstroCapture's catalog" : "From the built-in bright list";
+    for(const t of d.targets){
+      const bits = [];
+      if(t.mag != null) bits.push(`mag ${t.mag}`);
+      if(t.type) bits.push(t.type);
+      if(t.peak_alt_deg != null) bits.push(`peaks ${t.peak_alt_deg}°`);
+      if(t.hours_above != null) bits.push(`${t.hours_above} h up`);
+      if(t.alt_now_deg != null) bits.push(`now ${t.alt_now_deg}°`);
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = t.name;
+      const sub = document.createElement("div");
+      sub.className = "sub"; sub.textContent = bits.join(" · ") || "—";
+      grow.appendChild(nm); grow.appendChild(sub);
+      const go = document.createElement("button");
+      go.textContent = "Go"; go.className = "primary";
+      go.onclick = () => doGoto({name: t.name});
+      row.appendChild(grow); row.appendChild(go);
+      list.appendChild(row);
+    }
+    if(!d.targets.length) list.innerHTML =
+      '<div class="hint">Nothing well placed right now — try later tonight.</div>';
+  }catch(e){ list.innerHTML = `<div class="hint">Tonight list: ${e.message}</div>`; }
+}
+
+async function doGoto(payload){
+  try{
+    const d = await api("/api/goto", {method: "POST", body: payload});
+    log(payload.name ? `GoTo ${payload.name} (${d.source || "ok"})`
+                     : "GoTo coordinates sent");
+  }catch(e){ log("GoTo failed: " + e.message); }
+}
+
+let searchTimer = null;
+async function runSearch(){
+  const q = $("search").value.trim();
+  const box = $("search-results");
+  box.innerHTML = "";
+  if(q.length < 2) return;
+  try{
+    const d = await api("/api/targets?q=" + encodeURIComponent(q));
+    for(const r of d.results){
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = r.label || r.name;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = `RA ${fmtRA(r.ra_hours)}  Dec ${fmtDec(r.dec_deg)}`;
+      grow.appendChild(nm); grow.appendChild(sub);
+      const go = document.createElement("button");
+      go.textContent = "Go"; go.className = "primary";
+      go.onclick = () => doGoto({name: r.name});
+      const center = document.createElement("button");
+      center.textContent = "Center";
+      center.title = "Slew, then plate-solve and re-center automatically";
+      center.onclick = () => startCenter(r.name);
+      row.appendChild(grow); row.appendChild(center); row.appendChild(go);
+      box.appendChild(row);
+    }
+  }catch(e){ log("search: " + e.message); }
+}
+
+let centerPoll = null;
+async function startCenter(name){
+  try{
+    await api("/api/center", {method: "POST", body: {name}});
+    $("center-status").innerHTML = `Centering <b>${name}</b>…`;
+    log("Centering " + name + " (plate-solve loop)");
+    if(centerPoll) clearInterval(centerPoll);
+    centerPoll = setInterval(async () => {
+      try{
+        const d = await api("/api/center-status");
+        const c = d.center || {};
+        if(!c.running){
+          clearInterval(centerPoll); centerPoll = null;
+          $("center-status").innerHTML = c.error
+            ? `Centering failed: <b>${c.error}</b>`
+            : `Centered <b>${name}</b> ✓`;
+          log(c.error ? "Centering failed: " + c.error : "Centering done");
+        }else{
+          $("center-status").innerHTML =
+            `Centering <b>${name}</b>… iteration ${c.iteration || 1}`;
+        }
+      }catch(e){ /* keep polling */ }
+    }, 2000);
+  }catch(e){ log("Center failed: " + e.message); }
+}
+
+async function refreshUserObjects(){
+  const box = $("user-objects");
+  box.innerHTML = "";
+  try{
+    const d = await api("/api/user-objects");
+    for(const o of d.objects){
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = o.name;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = `RA ${fmtRA(o.ra_hours)}  Dec ${fmtDec(o.dec_deg)}`;
+      grow.appendChild(nm); grow.appendChild(sub);
+      const go = document.createElement("button");
+      go.textContent = "Go"; go.className = "primary";
+      go.onclick = async () => {
+        try{
+          await api("/api/goto-user", {method: "POST", body: {name: o.name}});
+          log("GoTo " + o.name);
+        }catch(e){ log("GoTo failed: " + e.message); }
+      };
+      const del = document.createElement("button");
+      del.textContent = "✕"; del.className = "danger"; del.title = "Delete";
+      del.onclick = async () => {
+        try{
+          await api("/api/user-objects?name=" + encodeURIComponent(o.name),
+                    {method: "DELETE"});
+          log("Deleted " + o.name);
+          refreshUserObjects();
+        }catch(e){ log("Delete failed: " + e.message); }
+      };
+      row.appendChild(grow); row.appendChild(go); row.appendChild(del);
+      box.appendChild(row);
+    }
+    if(!d.objects.length)
+      box.innerHTML = '<div class="hint">None yet — save the current view above.</div>';
+  }catch(e){ box.innerHTML = `<div class="hint">Saved objects: ${e.message}</div>`; }
+}
+
+async function refreshHC(){
+  try{
+    const d = await api("/api/hc");
+    const h = d.hc;
+    const kv = $("hc-info");
+    kv.innerHTML = "";
+    const rows = [
+      ["Mount", h.model || "—"],
+      ["HC firmware", h.hc_version || "—"],
+      ["HC clock", h.hc_time || "—"],
+      ["Tracking", h.tracking || "—"],
+      ["GPS", h.gps_linked == null ? "—" : (h.gps_linked ? "linked" : "no module")],
+      ["Bus", h.bus ? Object.entries(h.bus).map(([k, v]) => `${k}:${v}`).join(" ") : "—"],
+    ];
+    for(const [k, v] of rows){
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      kv.appendChild(dt); kv.appendChild(dd);
+    }
+  }catch(e){ $("hc-info").innerHTML = "<dt>unavailable</dt><dd></dd>"; }
+}
+
+const BL_ROWS = [
+  ["az", 1, "Azimuth +"], ["az", -1, "Azimuth −"],
+  ["alt", 1, "Altitude +"], ["alt", -1, "Altitude −"],
+];
+async function initBacklash(){
+  const box = $("backlash-rows");
+  for(const [axis, dir, label] of BL_ROWS){
+    const wrap = document.createElement("div");
+    wrap.className = "bl-row";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = "0"; slider.max = "99"; slider.value = "0";
+    const out = document.createElement("output");
+    out.textContent = "0";
+    slider.onchange = async () => {
+      try{
+        await api("/api/backlash", {method: "POST",
+          body: {axis, direction: dir, value: parseInt(slider.value, 10)}});
+        out.textContent = slider.value;
+        log(`${label} backlash → ${slider.value}`);
+      }catch(e){ log("Backlash failed: " + e.message); }
+    };
+    wrap.appendChild(lab); wrap.appendChild(slider); wrap.appendChild(out);
+    box.appendChild(wrap);
+    try{
+      const d = await api(`/api/backlash?axis=${axis}&direction=${dir}`);
+      slider.value = String(d.value); out.textContent = String(d.value);
+    }catch(e){ /* INDI backend has none — leave at 0 */ }
+  }
+}
+
+async function initCordwrap(){
+  const box = $("cordwrap");
+  try{
+    const d = await api("/api/cordwrap");
+    box.checked = !!d.enabled;
+  }catch(e){ box.disabled = true; }
+  box.onchange = async () => {
+    try{
+      await api("/api/cordwrap", {method: "POST", body: {enabled: box.checked}});
+      log("Cord wrap " + (box.checked ? "on" : "off"));
+    }catch(e){ log("Cord wrap failed: " + e.message); box.checked = !box.checked; }
+  };
+}
+
+async function loadAlignStars(){
+  const box = $("align-star-list");
+  box.innerHTML = '<div class="hint">loading…</div>';
+  try{
+    const d = await api("/api/align-stars");
+    box.innerHTML = "";
+    for(const s of d.stars){
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = s.name;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = `true position: az ${s.az_deg}°  alt ${s.alt_deg}°`;
+      grow.appendChild(nm); grow.appendChild(sub);
+      const slew = document.createElement("button");
+      slew.textContent = "Slew here";
+      slew.onclick = async () => {
+        try{
+          await api("/api/goto", {method: "POST",
+            body: {az_deg: s.az_deg, alt_deg: s.alt_deg}});
+          log(`Slewing close to ${s.name} — center it, then record`);
+        }catch(e){ log("Slew failed: " + e.message); }
+      };
+      const rec = document.createElement("button");
+      rec.textContent = "Centered — record"; rec.className = "primary";
+      rec.onclick = async () => {
+        try{
+          const r = await api("/api/sync-star", {method: "POST",
+            body: {name: s.name}});
+          log(`Recorded ${s.name} (${r.pending} star(s) so far)`);
+          rec.disabled = true; rec.textContent = "✓ Recorded";
+        }catch(e){ log("Record failed: " + e.message); }
+      };
+      row.appendChild(grow); row.appendChild(slew); row.appendChild(rec);
+      box.appendChild(row);
+    }
+    if(!d.stars.length)
+      box.innerHTML = '<div class="hint">No good stars up right now — try later.</div>';
+  }catch(e){ box.innerHTML = `<div class="hint">Stars: ${e.message}</div>`; }
+}
+
+function initPad(){
+  document.querySelectorAll("#pad button[data-dir]").forEach((b) => {
+    const dir = b.dataset.dir;
+    const start = async (e) => {
+      e.preventDefault();
+      try{ await api("/api/jog", {method: "POST",
+        body: {direction: dir, rate: slewRate()}}); }
+      catch(err){ log("Jog failed: " + err.message); }
+    };
+    const stop = async () => {
+      try{ await api("/api/jog_stop", {method: "POST", body: {}}); }
+      catch(err){ /* already stopped */ }
+    };
+    b.addEventListener("pointerdown", start);
+    b.addEventListener("pointerup", stop);
+    b.addEventListener("pointercancel", stop);
+    b.addEventListener("pointerleave", stop);
+  });
+  $("pad-stop").onclick = () => api("/api/jog_stop", {method: "POST", body: {}})
+    .catch((e) => log("Stop failed: " + e.message));
+}
+
+function initNightMode(){
+  const apply = (on) => {
+    document.body.classList.toggle("night", on);
+    $("night-toggle").textContent = on ? "☀️ Day" : "🌙 Night";
+  };
+  let on = localStorage.getItem("scopepilot-night") === "1";
+  apply(on);
+  $("night-toggle").onclick = () => {
+    on = !on;
+    localStorage.setItem("scopepilot-night", on ? "1" : "0");
+    apply(on);
+  };
+}
+
+function init(){
+  initNightMode();
+  initPad();
+  initBacklash();
+  initCordwrap();
+  $("rate").oninput = () => {
+    $("rate-label").textContent = `${slewRate()} · ${RATE_WORDS[slewRate()]}`;
+  };
+  $("btn-stop").onclick = async () => {
+    try{ await api("/api/stop", {method: "POST", body: {}}); log("Stopped"); }
+    catch(e){ log("Stop failed: " + e.message); }
+  };
+  $("search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 300);
+  });
+  $("btn-tonight").onclick = refreshTonight;
+  $("btn-identify").onclick = async () => {
+    try{
+      const d = await api("/api/identify");
+      $("identify-result").innerHTML = d.result
+        ? `Probably <b>${d.result.name}</b> — ${d.result.sep_deg}° away` +
+          (d.result.type ? ` (${d.result.type})` : "")
+        : "Nothing known within 2° of here.";
+    }catch(e){ log("Identify failed: " + e.message); }
+  };
+  $("btn-save-current").onclick = async () => {
+    const name = $("newobj-name").value.trim();
+    if(!name){ log("Give the view a name first"); return; }
+    try{
+      await api("/api/user-objects", {method: "POST",
+        body: {name, use_current: true}});
+      $("newobj-name").value = "";
+      log("Saved " + name);
+      refreshUserObjects();
+    }catch(e){ log("Save failed: " + e.message); }
+  };
+  $("btn-align-stars").onclick = loadAlignStars;
+  $("btn-align-fit").onclick = async () => {
+    try{
+      await api("/api/align-fit", {method: "POST", body: {}});
+      log("Pointing model built ✓");
+      refreshPointing();
+    }catch(e){ log("Fit failed: " + e.message); }
+  };
+  $("btn-align-clear").onclick = async () => {
+    try{
+      await api("/api/align-clear", {method: "POST", body: {}});
+      log("Pointing model cleared");
+      refreshPointing();
+    }catch(e){ log("Clear failed: " + e.message); }
+  };
+  document.querySelectorAll("#track-seg button").forEach((b) => {
+    b.onclick = async () => {
+      try{
+        const d = await api("/api/track", {method: "POST",
+          body: {mode: b.dataset.mode}});
+        log("Tracking: " + d.tracking_mode);
+      }catch(e){ log("Tracking failed: " + e.message); }
+    };
+  });
+  $("btn-park").onclick = async () => {
+    try{ await api("/api/park", {method: "POST", body: {}}); log("Parking…"); }
+    catch(e){ log("Park failed: " + e.message); }
+  };
+  $("btn-unpark").onclick = async () => {
+    try{ await api("/api/unpark", {method: "POST", body: {}}); log("Unparked, tracking on"); }
+    catch(e){ log("Unpark failed: " + e.message); }
+  };
+  $("btn-undo").onclick = async () => {
+    try{ await api("/api/undo-goto", {method: "POST", body: {}});
+      log("Undo GoTo — returning to the previous position"); }
+    catch(e){ log("Undo failed: " + e.message); }
+  };
+  $("btn-hc-sync").onclick = async () => {
+    try{
+      const d = await api("/api/hc-sync", {method: "POST", body: {}});
+      log("HC clock set" + (d.site ? `, site set (${d.site.lat}, ${d.site.lon})` : ""));
+      refreshHC();
+    }catch(e){ log("HC sync failed: " + e.message); }
+  };
+  $("btn-claim").onclick = async () => {
+    try{ await api("/api/claim", {method: "POST", body: {by: "dashboard"}});
+      log("Manual control claimed"); }
+    catch(e){ log("Claim failed: " + e.message); }
+  };
+  $("btn-release").onclick = async () => {
+    try{ await api("/api/release", {method: "POST", body: {}});
+      log("Manual control released"); }
+    catch(e){ log("Release failed: " + e.message); }
+  };
+  refreshState(); refreshPointing(); refreshTonight(); refreshUserObjects(); refreshHC();
+  setInterval(refreshState, 2000);
+  log("ScopePilot dashboard ready");
+}
+init();
 </script>
 </body>
 </html>

@@ -614,6 +614,40 @@ class NexStarDriver:
         self.stop_axis("az")
         self.stop_axis("alt")
 
+    # -- Utilities-menu equivalents (anti-backlash, cordwrap) --------------
+
+    def set_backlash(self, axis: str, direction: int, value: int) -> None:
+        """Anti-backlash: *axis* ``"az"``/``"alt"``, *direction* +/-1,
+        *value* 0-99 (``MC_SET_POS/NEG_BACKLASH``). Mirrors the HC
+        Utilities -> Anti-backlash menu."""
+        if axis not in ("az", "alt"):
+            raise ValueError("axis must be 'az' or 'alt'")
+        if direction not in (1, -1):
+            raise ValueError("direction must be +1 or -1")
+        if not 0 <= value <= 99:
+            raise ValueError("backlash value must be 0-99")
+        dev = DEV_AZM if axis == "az" else DEV_ALT
+        cmd = 0x10 if direction > 0 else 0x11
+        self.passthrough(dev, cmd, bytes([value]), 0)
+
+    def get_backlash(self, axis: str, direction: int) -> int:
+        """Read an anti-backlash value (0-99) for one axis/direction."""
+        if axis not in ("az", "alt"):
+            raise ValueError("axis must be 'az' or 'alt'")
+        if direction not in (1, -1):
+            raise ValueError("direction must be +1 or -1")
+        dev = DEV_AZM if axis == "az" else DEV_ALT
+        cmd = 0x40 if direction > 0 else 0x41
+        return self.passthrough(dev, cmd, b"", 1)[0]
+
+    def set_cordwrap(self, enabled: bool) -> None:
+        """Enable/disable cord wrap (``MC_ENABLE/DISABLE_CORDWRAP``)."""
+        self.passthrough(DEV_AZM, 0x38 if enabled else 0x39, b"", 0)
+
+    def cordwrap_enabled(self) -> bool:
+        """Poll cordwrap state (``MC_POLL_CORDWRAP``)."""
+        return self.passthrough(DEV_AZM, 0x3B, b"", 1)[0] != 0
+
     def variable_rate(self, axis: str, rate_arcsec_s: float) -> None:
         """Variable-rate slew on *axis* at *rate_arcsec_s* (signed).
 

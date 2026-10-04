@@ -143,6 +143,31 @@ was pointing at power-on. Always power on with the tube level and pointing
 north and the saved model (`~/.scopepilot/pointing.json`) stays valid
 between sessions — `scopepilot align --reuse` picks it up.
 
+## Dashboard
+
+```bash
+scopepilot dash   # http://127.0.0.1:8765 — big readable panels, red night mode
+```
+
+The dashboard covers everything the hand controller does, in plain
+language — no menus to memorize:
+
+- **Where it's pointing** — large RA/Dec + Alt/Az readouts, slew indicator,
+  and **Identify** ("What am I looking at?" → nearest catalog object).
+- **Move the telescope** — press-and-hold direction pad, speed slider with
+  plain words (crawl … fastest), stop-everything button.
+- **Go to something** — catalog search (Go + auto-center via plate solving),
+  **Tonight's best** ranked list (Sky Tour idea), and **My saved objects**
+  (HC User Objects: save the current view, slew back, delete).
+- **Alignment** — guided wizard: slew to each suggested star, center it,
+  record, then build the pointing model. No HC alignment ever.
+- **Telescope** — tracking modes, Park/Unpark, **Undo GoTo**, HC info
+  (model, firmware, clock, GPS, AUX bus), one-click HC clock + site sync,
+  anti-backlash sliders (HC Utilities menu), cord-wrap toggle.
+
+A 🌙 Night button switches the whole page to deep-red light so it won't
+ruin your dark adaptation at the scope.
+
 ## Working alongside AstroCapture
 
 **Option A — shared indiserver (recommended while imaging).**

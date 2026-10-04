@@ -155,6 +155,83 @@ def search_targets(query: str, limit: int = 12) -> list[dict]:
     return deduped[:limit]
 
 
+def tonight_list(
+    lat: float, lon: float, limit: int = 12, min_alt_deg: float = 20.0
+) -> tuple[list[dict], str]:
+    """Tonight's best-placed targets for a site (HC Sky Tour idea).
+
+    Prefers astrocapture's astropy-powered ``tonight_best``; falls back
+    to the builtin bright-object table ranked by current altitude.
+    Returns (items, source).
+    """
+    from scopepilot.astro import radec_to_altaz, utcnow
+
+    try:
+        from astrocapture.catalog import tonight_best  # type: ignore
+        rows = tonight_best(lat, lon, min_alt_deg=min_alt_deg, limit=limit)
+        items = [{
+            "name": r["name"],
+            "type": r.get("type"),
+            "mag": r.get("mag"),
+            "constellation": r.get("constellation"),
+            "peak_alt_deg": (round(float(r["peak_alt_deg"]), 1)
+                             if r.get("peak_alt_deg") is not None else None),
+            "hours_above": (round(float(r["hours_above"]), 1)
+                            if r.get("hours_above") is not None else None),
+        } for r in rows]
+        return items, "astrocapture-catalog"
+    except Exception:
+        pass
+    now = utcnow()
+    rows = []
+    for name, (ra, dec) in sorted(BRIGHT_OBJECTS.items()):
+        try:
+            _az, alt = radec_to_altaz(ra, dec, lat, lon, now)
+        except Exception:
+            continue
+        if alt >= min_alt_deg:
+            rows.append({
+                "name": name, "type": None, "mag": None,
+                "constellation": None, "alt_now_deg": round(alt, 1),
+                "peak_alt_deg": None, "hours_above": None,
+            })
+    rows.sort(key=lambda r: -r["alt_now_deg"])
+    return rows[:limit], "scopepilot-builtin"
+
+
+def identify(
+    ra_hours: float, dec_deg: float, max_sep_deg: float = 2.0
+) -> dict | None:
+    """HC Identify: nearest known object to an RA/Dec position.
+
+    Returns ``{"name", "type", "sep_deg", ...}`` or None when nothing is
+    within *max_sep_deg*.
+    """
+    from scopepilot.astro import angular_sep_deg
+
+    candidates: list[tuple[str, float, float, str | None, str]] = []
+    try:
+        from astrocapture.catalog import load_catalog  # type: ignore
+        for obj in load_catalog():
+            try:
+                candidates.append((
+                    str(obj.get("name") or obj.get("id")),
+                    float(obj["ra"]) / 15.0, float(obj["dec"]),
+                    obj.get("type"), "astrocapture-catalog"))
+            except (KeyError, TypeError, ValueError):
+                continue
+    except Exception:
+        candidates = [(name, ra, dec, None, "scopepilot-builtin")
+                      for name, (ra, dec) in BRIGHT_OBJECTS.items()]
+    best: dict | None = None
+    for name, ra, dec, typ, src in candidates:
+        sep = angular_sep_deg(ra_hours, dec_deg, ra, dec)
+        if sep <= max_sep_deg and (best is None or sep < best["sep_deg"]):
+            best = {"name": name, "type": typ, "sep_deg": round(sep, 2),
+                    "ra_hours": ra, "dec_deg": dec, "source": src}
+    return best
+
+
 def read_night_plan(path: str | Path) -> list[dict]:
     """Read an AstroCapture night plan -> [{name, priority}]."""
     data = yaml.safe_load(Path(path).read_text()) or {}

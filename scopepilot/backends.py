@@ -97,6 +97,21 @@ class Backend(abc.ABC):
         """Extra backend-specific diagnostics for ``scopepilot probe``."""
         return {}
 
+    # -- optional Utilities-menu features ------------------------------------
+    def set_backlash(self, axis: str, direction: int, value: int) -> None:
+        """Anti-backlash 0-99 for one axis/direction (optional)."""
+        raise NotImplementedError(f"{self.name} backend has no backlash control")
+
+    def get_backlash(self, axis: str, direction: int) -> int:
+        raise NotImplementedError(f"{self.name} backend has no backlash control")
+
+    def set_cordwrap(self, enabled: bool) -> None:
+        """Enable/disable cord wrap (optional)."""
+        raise NotImplementedError(f"{self.name} backend has no cordwrap control")
+
+    def cordwrap_enabled(self) -> bool:
+        raise NotImplementedError(f"{self.name} backend has no cordwrap control")
+
 
 # ---------------------------------------------------------------------------
 # Serial: direct NexStar protocol
@@ -185,6 +200,18 @@ class SerialBackend(Backend):
             d.stop_all()
         else:
             d.stop_axis(axis)
+
+    def set_backlash(self, axis: str, direction: int, value: int) -> None:
+        self._d().set_backlash(axis, direction, value)
+
+    def get_backlash(self, axis: str, direction: int) -> int:
+        return self._d().get_backlash(axis, direction)
+
+    def set_cordwrap(self, enabled: bool) -> None:
+        self._d().set_cordwrap(enabled)
+
+    def cordwrap_enabled(self) -> bool:
+        return self._d().cordwrap_enabled()
 
     def set_hc_time(self, year, month, day, hour, minute, second,
                     utc_offset_hours, dst) -> None:
@@ -315,6 +342,18 @@ class SimBackend(Backend):
 
     def set_hc_location(self, lat_deg: float, lon_deg: float) -> None:
         self._serial_view().set_hc_location(lat_deg, lon_deg)
+
+    def set_backlash(self, axis: str, direction: int, value: int) -> None:
+        self._serial_view().set_backlash(axis, direction, value)
+
+    def get_backlash(self, axis: str, direction: int) -> int:
+        return self._serial_view().get_backlash(axis, direction)
+
+    def set_cordwrap(self, enabled: bool) -> None:
+        self._serial_view().set_cordwrap(enabled)
+
+    def cordwrap_enabled(self) -> bool:
+        return self._serial_view().cordwrap_enabled()
 
     def wait_goto(self, timeout: float) -> bool:
         return self._serial_view().wait_goto(timeout)

@@ -16,6 +16,19 @@ Endpoints::
     POST /api/unpark        clear parked, resume tracking
     POST /api/claim         {by} mark the mount operator-driven
     POST /api/release       clear the manual-override claim
+    GET  /api/align-stars   suggested alignment stars with true az/alt
+    GET  /api/tonight       tonight's best-placed targets for the site
+    GET  /api/identify      nearest catalog object to current pointing
+    GET  /api/user-objects  saved user objects
+    POST /api/user-objects  {name, ra_hours, dec_deg} or {name, use_current}
+    DELETE /api/user-objects?name=  delete one
+    POST /api/undo-goto     slew back to the pre-goto position
+    GET  /api/hc            hand-controller info (model/fw/clock/GPS/bus)
+    POST /api/hc-sync       set HC clock + site from this computer
+    GET  /api/backlash      ?axis=az|alt&direction=1|-1 -> current value
+    POST /api/backlash      {axis, direction, value} anti-backlash 0-99
+    GET  /api/cordwrap      {enabled}
+    POST /api/cordwrap      {enabled} set cordwrap on/off
 
 The manual-override claim is the coexistence signal: while claimed,
 AstroCapture's sequencer should pause instead of slewing against the
@@ -35,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 from scopepilot import bridge
 from scopepilot.controller import AlignmentError, TelescopeController
 from scopepilot.nexstar import NexStarError
+from scopepilot.pointing import suggest_alignment_stars
 
 log = logging.getLogger(__name__)
 _HTML_PATH = Path(__file__).with_name("dash.html")
@@ -117,6 +131,7 @@ def _snapshot(state: _ScopeState) -> dict:
         "slewing": st.slewing,
         "parked": st.parked,
         "note": st.note,
+        "undo_available": state.controller._pre_goto is not None,
         "manual_override": state.claim_snapshot(),
         "server_time": time.time(),
     }
@@ -175,6 +190,56 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True,
                                  "pointing":
                                  self.state.controller.pointing_status()})
+            elif parsed.path == "/api/align-stars":
+                ctl = self.state.controller
+                if ctl.site_lat is None or ctl.site_lon is None:
+                    self._fail(ValueError(
+                        "no site configured; set site_lat/site_lon"), 400)
+                else:
+                    stars = suggest_alignment_stars(ctl.site_lat, ctl.site_lon)
+                    self._send_json({"ok": True,
+                                     "stars": [{"name": name,
+                                                "az_deg": round(az, 1),
+                                                "alt_deg": round(alt, 1)}
+                                               for name, az, alt in stars]})
+            elif parsed.path == "/api/tonight":
+                ctl = self.state.controller
+                qs = parse_qs(parsed.query)
+                lat = qs.get("lat", [None])[0]
+                lon = qs.get("lon", [None])[0]
+                lat = float(lat) if lat else ctl.site_lat
+                lon = float(lon) if lon else ctl.site_lon
+                if lat is None or lon is None:
+                    self._fail(ValueError(
+                        "no site configured; pass ?lat=&lon="), 400)
+                else:
+                    items, src = bridge.tonight_list(lat, lon)
+                    self._send_json({"ok": True, "targets": items,
+                                     "source": src})
+            elif parsed.path == "/api/identify":
+                ctl = self.state.controller
+                st = ctl.status()
+                hit = bridge.identify(st.ra_hours, st.dec_deg)
+                self._send_json({"ok": True, "result": hit,
+                                 "ra_hours": st.ra_hours,
+                                 "dec_deg": st.dec_deg})
+            elif parsed.path == "/api/user-objects":
+                self._send_json({"ok": True,
+                                 "objects":
+                                 self.state.controller.list_user_objects()})
+            elif parsed.path == "/api/hc":
+                self._send_json({"ok": True,
+                                 "hc": self.state.controller.hc_info()})
+            elif parsed.path == "/api/backlash":
+                ctl = self.state.controller
+                qs = parse_qs(parsed.query)
+                axis = qs.get("axis", ["az"])[0]
+                direction = int(qs.get("direction", ["1"])[0])
+                self._send_json({"ok": True,
+                                 "value": ctl.get_backlash(axis, direction)})
+            elif parsed.path == "/api/cordwrap":
+                self._send_json({"ok": True, "enabled":
+                                 self.state.controller.cordwrap_enabled()})
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except Exception as exc:  # never leak a traceback to the UI
@@ -256,6 +321,47 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/align-clear":
                 ctl.clear_pointing()
                 self._ok()
+            elif parsed.path == "/api/undo-goto":
+                ctl.undo_goto(wait=False)
+                self._ok()
+            elif parsed.path == "/api/user-objects":
+                name = (body.get("name") or "").strip()
+                if not name:
+                    self._fail(ValueError("need {name}"), 400)
+                elif body.get("use_current"):
+                    obj = ctl.save_current_as(name)
+                    self._ok(object=obj)
+                elif "ra_hours" in body and "dec_deg" in body:
+                    obj = ctl.add_user_object(
+                        name, float(body["ra_hours"]),
+                        float(body["dec_deg"]))
+                    self._ok(object=obj)
+                else:
+                    self._fail(ValueError(
+                        "need {name, use_current} or {name, ra_hours, dec_deg}"),
+                        400)
+            elif parsed.path == "/api/goto-user":
+                name = (body.get("name") or "").strip()
+                if not name:
+                    self._fail(ValueError("need {name}"), 400)
+                else:
+                    ra, dec, _settled = ctl.goto_user_object(name, wait=False)
+                    self._ok(ra_hours=ra, dec_deg=dec)
+            elif parsed.path == "/api/hc-sync":
+                clock = ctl.sync_clock()
+                site = None
+                if ctl.site_lat is not None and ctl.site_lon is not None:
+                    ctl.set_site(ctl.site_lat, ctl.site_lon)
+                    site = {"lat": ctl.site_lat, "lon": ctl.site_lon}
+                self._ok(clock=clock, site=site)
+            elif parsed.path == "/api/backlash":
+                ctl.set_backlash(body.get("axis", "az"),
+                                 int(body.get("direction", 1)),
+                                 int(body.get("value", 0)))
+                self._ok()
+            elif parsed.path == "/api/cordwrap":
+                ctl.set_cordwrap(bool(body.get("enabled")))
+                self._ok(enabled=ctl.cordwrap_enabled())
             elif parsed.path == "/api/center":
                 name = body.get("name", "")
                 if not name:
@@ -274,6 +380,23 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except AlignmentError as exc:
             self._fail(exc, 409)
+        except (NexStarError, ValueError, LookupError, KeyError) as exc:
+            self._fail(exc, 400)
+        except Exception as exc:  # pragma: no cover - defensive
+            self._fail(exc)
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path == "/api/user-objects":
+                name = parse_qs(parsed.query).get("name", [""])[0]
+                if not name:
+                    self._fail(ValueError("missing ?name="), 400)
+                else:
+                    self.state.controller.delete_user_object(name)
+                    self._ok()
+            else:
+                self._send_json({"ok": False, "error": "not found"}, 404)
         except (NexStarError, ValueError, LookupError, KeyError) as exc:
             self._fail(exc, 400)
         except Exception as exc:  # pragma: no cover - defensive
