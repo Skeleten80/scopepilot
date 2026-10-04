@@ -154,8 +154,10 @@ language — no menus to memorize:
 
 - **Where it's pointing** — large RA/Dec + Alt/Az readouts, slew indicator,
   and **Identify** ("What am I looking at?" → nearest catalog object).
-- **Move the telescope** — press-and-hold direction pad, speed slider with
-  plain words (crawl … fastest), stop-everything button.
+- **Move the telescope** — a virtual joystick: drag the knob in any
+  direction (diagonals work), distance sets speed up to the slider's
+  maximum; release to stop. Speed slider with plain words (crawl …
+  fastest), stop-everything button.
 - **Go to something** — catalog search (Go + auto-center via plate solving),
   **Tonight's best** ranked list (Sky Tour idea), and **My saved objects**
   (HC User Objects: save the current view, slew back, delete).
@@ -186,7 +188,36 @@ More things the console does beyond the HC:
   per target. Rise / transit / set times shown in your local time.
 - **Site profiles** — save named sites (location + limits), apply with one
   click: `scopepilot site save dark --lat 44.1 --lon -79.5 --min-alt 15`.
-- **Keyboard** — arrow keys jog, spacebar stops everything.
+- **Keyboard** — arrow keys jog at the slider rate, **Shift+arrows** always
+  crawl (rate 1) for fine centering, spacebar stops everything.
+
+### Phone / tablet remote (iOS, iPadOS)
+
+The dashboard is a web page, so an iPhone or iPad makes an excellent
+wireless hand controller — handy when you're at the eyepiece and the
+computer is a few steps away. (iOS can't run the ScopePilot server
+itself — no serial-port access — so the computer at the scope stays in
+charge; the phone is purely a remote.)
+
+1. On the scope computer, expose the dashboard to your local network
+   (it defaults to localhost-only):
+   ```bash
+   scopepilot dash --host 0.0.0.0   # then http://<computer-ip>:8765
+   ```
+   Find the computer's Wi-Fi IP with `ipconfig getifaddr en0` (macOS)
+   or `ipconfig` (Windows).
+2. Join the **same Wi-Fi** on the phone/tablet. In the field with no
+   router, use the computer's hotspot or your phone's hotspot — either
+   way both devices just need to be on one network.
+3. Open Safari to `http://<computer-ip>:8765`. The cards stack
+   single-column and the joystick is touch-ready (drag the knob, release
+   to stop). Tip: Share → Add to Home Screen for a full-screen,
+   app-like remote.
+
+One safety note: the joystick sends "start" on press and "stop" on
+release. If the Wi-Fi drops mid-drag, the stop may never arrive and the
+mount keeps slewing — so release the knob (or hit Stop) before walking
+away, and keep the computer as your primary control.
 
 ## Working alongside AstroCapture
 
