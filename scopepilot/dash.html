@@ -153,7 +153,7 @@ body.night #log{background:#0d0202}
     <label for="rate">Slew speed: <b id="rate-label">5 · medium</b></label>
     <input type="range" id="rate" min="1" max="9" value="5" step="1">
     <div class="ratewords"><span>crawl</span><span>medium</span><span>fastest</span></div>
-    <div class="hint" style="margin-top:.4rem">Tip: arrow keys jog, <b>spacebar</b> stops everything.</div>
+    <div class="hint" style="margin-top:.4rem">Tip: arrow keys jog, <b>shift+arrows</b> = fine nudge, <b>spacebar</b> stops everything.</div>
     <div class="row">
       <button id="btn-stop" class="danger">⏹ Stop everything</button>
     </div>
@@ -984,6 +984,8 @@ async function initAdaptive(){
 }
 
 function initKeys(){
+  /* Arrow keys jog at the slider rate; hold Shift for precision mode
+     (crawl = rate 1, for fine centering). Spacebar stops everything. */
   const jogKeys = {ArrowUp: "up", ArrowDown: "down",
                    ArrowLeft: "left", ArrowRight: "right"};
   document.addEventListener("keydown", (e) => {
@@ -997,8 +999,10 @@ function initKeys(){
     const dir = jogKeys[e.key];
     if(dir && !e.repeat){
       e.preventDefault();
+      const rate = e.shiftKey ? 1 : slewRate();
+      if(e.shiftKey) log("Precision nudge (rate 1)");
       api("/api/jog", {method: "POST",
-        body: {direction: dir, rate: slewRate()}}).catch(() => {});
+        body: {direction: dir, rate}}).catch(() => {});
     }
   });
   document.addEventListener("keyup", (e) => {
