@@ -29,6 +29,16 @@ Endpoints::
     POST /api/backlash      {axis, direction, value} anti-backlash 0-99
     GET  /api/cordwrap      {enabled}
     POST /api/cordwrap      {enabled} set cordwrap on/off
+    GET  /api/limits        {min_alt_deg, max_alt_deg}
+    POST /api/limits        {min_alt_deg?, max_alt_deg?} altitude slew limits
+    GET  /api/firstlight    guided first-connection checklist steps
+    GET  /api/spiral        spiral-search waypoints around current position
+    GET  /api/sites         saved site profiles
+    POST /api/sites         {name, lat_deg, lon_deg, min_alt_deg?, max_alt_deg?}
+    POST /api/sites/use     {name} apply a profile (site + limits)
+    DELETE /api/sites?name= delete a profile
+    GET  /api/adaptive      {enabled} plate-solve model refinement
+    POST /api/adaptive      {enabled}
 
 The manual-override claim is the coexistence signal: while claimed,
 AstroCapture's sequencer should pause instead of slewing against the
@@ -55,12 +65,30 @@ _HTML_PATH = Path(__file__).with_name("dash.html")
 
 
 class _ScopeState:
-    def __init__(self, controller: TelescopeController, make_rig=None) -> None:
+    def __init__(self, controller: TelescopeController, make_rig=None,
+                 config=None, config_path=None) -> None:
         self.controller = controller
+        self.config = config            # ScopeConfig or None
+        self.config_path = config_path  # path passed to save_config
         self.make_rig = make_rig
         self._lock = threading.Lock()
         self._claim = {"claimed": False, "by": None, "at": None}
         self._center = {"running": False, "events": [], "report": None}
+
+    def persist_config(self) -> None:
+        """Write slew limits / site back to the config file (best effort)."""
+        if self.config is None:
+            return
+        from scopepilot.config import save_config
+        ctl = self.controller
+        self.config.site_lat = ctl.site_lat
+        self.config.site_lon = ctl.site_lon
+        self.config.min_alt_deg = ctl.min_alt
+        self.config.max_alt_deg = ctl.max_alt
+        try:
+            save_config(self.config, self.config_path)
+        except OSError:
+            pass
 
     def claim_snapshot(self) -> dict:
         with self._lock:
@@ -115,6 +143,109 @@ class _ScopeState:
                             "report": report}
 
 
+def _firstlight(ctl: TelescopeController) -> list[dict]:
+    """First-light checklist: live step states for the dashboard.
+
+    Each step: {id, label, state: done|pending|na, detail}.
+    """
+    from datetime import datetime
+
+    steps = []
+    indi = ctl.backend.name == "indi"
+
+    # 1. connection
+    try:
+        st = ctl.status()
+        steps.append({"id": "connect", "label": "Mount connected",
+                      "state": "done",
+                      "detail": st.model or ctl.backend.name})
+    except Exception as exc:  # pragma: no cover - defensive
+        return [{"id": "connect", "label": "Mount connected",
+                 "state": "pending", "detail": str(exc)}]
+
+    # 2. HC clock vs computer clock
+    if indi:
+        steps.append({"id": "clock", "label": "HC clock matches computer",
+                      "state": "na",
+                      "detail": "INDI can't read the HC clock; set it over serial once"})
+    else:
+        hc_time = ctl.backend.probe_details().get("hc_time")
+        if isinstance(hc_time, dict) and hc_time.get("year"):
+            try:
+                hc_dt = datetime(hc_time["year"], hc_time["month"],
+                                 hc_time["day"], hc_time["hour"],
+                                 hc_time["minute"], hc_time.get("second", 0))
+                skew = abs((datetime.now() - hc_dt).total_seconds())
+                steps.append({"id": "clock",
+                              "label": "HC clock matches computer",
+                              "state": "done" if skew < 180 else "pending",
+                              "detail": f"off by {skew:.0f} s"})
+            except (ValueError, KeyError):
+                steps.append({"id": "clock",
+                              "label": "HC clock matches computer",
+                              "state": "pending", "detail": "unreadable"})
+        else:
+            steps.append({"id": "clock", "label": "HC clock matches computer",
+                          "state": "pending", "detail": "no clock readout"})
+
+    # 3. HC site vs configured site
+    if indi:
+        steps.append({"id": "site", "label": "HC site matches config",
+                      "state": "na",
+                      "detail": "INDI can't read the HC site; set it over serial once"})
+    else:
+        hc_site = ctl.get_hc_location()
+        if (hc_site and ctl.site_lat is not None
+                and ctl.site_lon is not None):
+            d = abs(hc_site[0] - ctl.site_lat) + abs(hc_site[1] - ctl.site_lon)
+            steps.append({"id": "site", "label": "HC site matches config",
+                          "state": "done" if d < 0.5 else "pending",
+                          "detail": f"HC {hc_site[0]:.2f}, {hc_site[1]:.2f}"})
+        else:
+            steps.append({"id": "site", "label": "HC site matches config",
+                          "state": "pending", "detail": "no site readout"})
+
+    # 4. backlash configured
+    if indi:
+        steps.append({"id": "backlash", "label": "Anti-backlash set",
+                      "state": "na",
+                      "detail": "set once over direct serial (stored in mount)"})
+    else:
+        vals = []
+        try:
+            for axis in ("az", "alt"):
+                for direction in (1, -1):
+                    vals.append(ctl.get_backlash(axis, direction))
+            done = any(v > 0 for v in vals) or ctl._backlash_configured
+            steps.append({"id": "backlash", "label": "Anti-backlash set",
+                          "state": "done" if done else "pending",
+                          "detail": f"az {vals[0]}/{vals[1]}, "
+                                    f"alt {vals[2]}/{vals[3]}"})
+        except NexStarError:
+            steps.append({"id": "backlash", "label": "Anti-backlash set",
+                          "state": "pending", "detail": "unreadable"})
+
+    # 5. alignment (software model or HC)
+    p = ctl.pointing_status()
+    if p.get("active"):
+        steps.append({"id": "align", "label": "Aligned",
+                      "state": "done",
+                      "detail": f"pointing model, RMS {p['rms_arcmin']:.1f}'"})
+    elif st.aligned:
+        steps.append({"id": "align", "label": "Aligned", "state": "done",
+                      "detail": "hand-controller alignment"})
+    else:
+        steps.append({"id": "align", "label": "Aligned", "state": "pending",
+                      "detail": "run the alignment wizard below"})
+
+    # 6. test slew
+    steps.append({"id": "goto", "label": "Test slew settled",
+                  "state": "done" if ctl._goto_ok else "pending",
+                  "detail": "slew at least once this session"
+                            if not ctl._goto_ok else "a goto settled OK"})
+    return steps
+
+
 def _snapshot(state: _ScopeState) -> dict:
     st = state.controller.status()
     return {
@@ -132,6 +263,10 @@ def _snapshot(state: _ScopeState) -> dict:
         "parked": st.parked,
         "note": st.note,
         "undo_available": state.controller._pre_goto is not None,
+        "site_lat": state.controller.site_lat,
+        "site_lon": state.controller.site_lon,
+        "min_alt_deg": state.controller.min_alt,
+        "max_alt_deg": state.controller.max_alt,
         "manual_override": state.claim_snapshot(),
         "server_time": time.time(),
     }
@@ -240,6 +375,29 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/cordwrap":
                 self._send_json({"ok": True, "enabled":
                                  self.state.controller.cordwrap_enabled()})
+            elif parsed.path == "/api/limits":
+                ctl = self.state.controller
+                self._send_json({"ok": True, "min_alt_deg": ctl.min_alt,
+                                 "max_alt_deg": ctl.max_alt})
+            elif parsed.path == "/api/firstlight":
+                self._send_json({"ok": True,
+                                 "steps": _firstlight(
+                                     self.state.controller)})
+            elif parsed.path == "/api/spiral":
+                ctl = self.state.controller
+                qs = parse_qs(parsed.query)
+                pts = ctl.spiral_waypoints(
+                    max_radius_deg=float(qs.get("max_radius_deg",
+                                               ["2.0"])[0]),
+                    step_deg=float(qs.get("step_deg", ["0.5"])[0]))
+                self._send_json({"ok": True, "waypoints": pts,
+                                 "count": len(pts)})
+            elif parsed.path == "/api/sites":
+                self._send_json({"ok": True,
+                                 **self.state.controller.list_site_profiles()})
+            elif parsed.path == "/api/adaptive":
+                self._send_json({"ok": True, "enabled":
+                                 self.state.controller.adaptive_pointing})
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except Exception as exc:  # never leak a traceback to the UI
@@ -362,6 +520,24 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/cordwrap":
                 ctl.set_cordwrap(bool(body.get("enabled")))
                 self._ok(enabled=ctl.cordwrap_enabled())
+            elif parsed.path == "/api/limits":
+                ctl.set_slew_limits(body.get("min_alt_deg"),
+                                    body.get("max_alt_deg"))
+                self.state.persist_config()
+                self._ok(min_alt_deg=ctl.min_alt, max_alt_deg=ctl.max_alt)
+            elif parsed.path == "/api/sites":
+                prof = ctl.save_site_profile(
+                    body.get("name", ""),
+                    float(body["lat_deg"]), float(body["lon_deg"]),
+                    body.get("min_alt_deg"), body.get("max_alt_deg"))
+                self._ok(profile=prof)
+            elif parsed.path == "/api/sites/use":
+                prof = ctl.apply_site_profile(body.get("name", ""))
+                self.state.persist_config()
+                self._ok(profile=prof)
+            elif parsed.path == "/api/adaptive":
+                ctl.adaptive_pointing = bool(body.get("enabled", True))
+                self._ok(enabled=ctl.adaptive_pointing)
             elif parsed.path == "/api/center":
                 name = body.get("name", "")
                 if not name:
@@ -395,6 +571,13 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     self.state.controller.delete_user_object(name)
                     self._ok()
+            elif parsed.path == "/api/sites":
+                name = parse_qs(parsed.query).get("name", [""])[0]
+                if not name:
+                    self._fail(ValueError("missing ?name="), 400)
+                else:
+                    self.state.controller.delete_site_profile(name)
+                    self._ok()
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except (NexStarError, ValueError, LookupError, KeyError) as exc:
@@ -408,14 +591,19 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     make_rig=None,
+    config=None,
+    config_path=None,
 ) -> ThreadingHTTPServer:
     """Build (not yet serving) the console server.
 
     *make_rig* is an optional zero-arg factory returning a
     ``capture_and_solve`` callable for ``POST /api/center``.
+    *config*/*config_path* let the dashboard persist slew limits and
+    site profiles back to the config file.
     """
     handler = type("_BoundHandler", (_Handler,),
-                   {"state": _ScopeState(controller, make_rig)})
+                   {"state": _ScopeState(controller, make_rig,
+                                          config, config_path)})
     server = ThreadingHTTPServer((host, port), handler)
     return server
 
@@ -425,9 +613,12 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     make_rig=None,
+    config=None,
+    config_path=None,
 ) -> None:
     """Serve the console until Ctrl-C."""
-    server = create_server(controller, host, port, make_rig)
+    server = create_server(controller, host, port, make_rig,
+                           config=config, config_path=config_path)
     addr = server.server_address
     print(f"ScopePilot console on http://{addr[0]}:{addr[1]}  (Ctrl-C to stop)")
     try:

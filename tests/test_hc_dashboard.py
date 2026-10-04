@@ -351,3 +351,205 @@ def test_cordwrap_routes(api):
     assert code == 200 and j["enabled"] is True
     code, j = _get(api, "/api/cordwrap")
     assert j["enabled"] is True
+
+
+# -- slew limits ------------------------------------------------------------
+
+def test_slew_limits_enforced(scope):
+    from scopepilot.controller import SlewLimitError
+    scope.set_slew_limits(20.0, 85.0)
+    with pytest.raises(SlewLimitError):
+        scope.goto_altaz(180.0, 10.0)
+    with pytest.raises(SlewLimitError):
+        scope.goto_altaz(180.0, 88.0)
+    assert scope.goto_altaz(180.0, 45.0) is True
+
+
+def test_slew_limits_validation(scope):
+    with pytest.raises(ValueError):
+        scope.set_slew_limits(90.0, 20.0)
+    with pytest.raises(ValueError):
+        scope.set_slew_limits(-5.0, 80.0)
+    scope.set_slew_limits(None, None)
+    assert scope.goto_altaz(180.0, 5.0) is True
+
+
+def test_limits_routes(api):
+    code, j = _get(api, "/api/limits")
+    assert code == 200 and j["min_alt_deg"] is None
+    code, j = _post(api, "/api/limits",
+                    {"min_alt_deg": 25.0, "max_alt_deg": 80.0})
+    assert code == 200 and j["min_alt_deg"] == 25.0
+    code, j = _get(api, "/api/limits")
+    assert j["max_alt_deg"] == 80.0
+    code, j = _post(api, "/api/goto",
+                    {"az_deg": 180.0, "alt_deg": 10.0})
+    assert code == 400 and "slew limit" in j["error"]
+    _post(api, "/api/limits",
+          {"min_alt_deg": None, "max_alt_deg": None})
+
+
+# -- spiral search ------------------------------------------------------------
+
+def test_spiral_waypoints_shape(scope):
+    pts = scope.spiral_waypoints(180.0, 45.0, max_radius_deg=2.0,
+                                 step_deg=0.5)
+    assert pts[0] == (180.0, 45.0)
+    assert len(pts) > 10
+    import math
+    for az, alt in pts:
+        # small-angle distance from center stays within the radius
+        d = math.hypot((az - 180.0 + 180) % 360 - 180, alt - 45.0)
+        assert d <= 2.05
+
+
+def test_spiral_route(api):
+    code, j = _get(api, "/api/spiral?max_radius_deg=1.0&step_deg=0.5")
+    assert code == 200 and j["count"] == len(j["waypoints"]) > 5
+
+
+# -- per-star residuals --------------------------------------------------------
+
+def test_residuals_flag_outlier():
+    from scopepilot.pointing import PointingModel, SyncStar
+    stars = [
+        SyncStar(name=f"G{i}", true_az=100.0 + i * 40, true_alt=50.0,
+                 reported_az=99.0 + i * 40, reported_alt=49.5, at=0.0)
+        for i in range(4)
+    ]
+    # mis-centered badly:
+    stars.append(SyncStar(name="OUT", true_az=300.0, true_alt=55.0,
+                          reported_az=285.0, reported_alt=47.0, at=0.0))
+    m = PointingModel.fit(stars)
+    res = m.residuals_arcmin()
+    assert len(res) == 5
+    import statistics
+    assert res[4] == max(res)
+    assert res[4] > 3 * statistics.median(res)
+
+
+def test_align_fit_reports_residuals(api):
+    _post(api, "/api/sync-star", {"name": "Vega"})
+    _post(api, "/api/sync-star", {"name": "Altair"})
+    code, j = _post(api, "/api/align-fit", {})
+    assert code == 200
+    assert len(j["pointing"]["residuals"]) == 2
+
+
+# -- first light ----------------------------------------------------------------
+
+def test_firstlight_steps(api):
+    code, j = _get(api, "/api/firstlight")
+    assert code == 200
+    ids = [s["id"] for s in j["steps"]]
+    assert ids == ["connect", "clock", "site", "backlash", "align", "goto"]
+    by_id = {s["id"]: s for s in j["steps"]}
+    assert by_id["connect"]["state"] == "done"
+    assert by_id["clock"]["state"] == "done"  # sim clock matches
+    for s in j["steps"]:
+        assert s["state"] in ("done", "pending", "na")
+
+
+def test_adaptive_toggle(api):
+    code, j = _get(api, "/api/adaptive")
+    assert code == 200 and j["enabled"] is True
+    code, j = _post(api, "/api/adaptive", {"enabled": False})
+    assert j["enabled"] is False
+
+
+# -- adaptive pointing ------------------------------------------------------------
+
+def test_refine_with_solve(scope):
+    # seed a 2-star model first
+    scope.record_sync_star("Vega")
+    scope.record_sync_star("Altair")
+    scope.fit_pointing()
+    n0 = len(scope.pointing.stars)
+    out = scope.refine_with_solve(13.498, 47.195)  # true M51 coords
+    assert out is not None
+    assert out["stars"] == n0 + 1
+    assert scope.pointing.rms_arcmin >= 0.0
+
+
+def test_refine_needs_two_stars(scope):
+    assert scope.refine_with_solve(13.498, 47.195) is None
+
+
+# -- session log ------------------------------------------------------------------
+
+def test_session_log_written(monkeypatch, tmp_path):
+    import json
+    from datetime import datetime, timezone
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ctl = TelescopeController(SimBackend(slew_rate_dps=720.0),
+                              site_lat=43.37, site_lon=-80.98)
+    ctl.connect()
+    try:
+        assert ctl.goto_altaz(180.0, 45.0) is True
+        ctl.set_tracking("off")
+    finally:
+        ctl.disconnect()
+    logfile = (tmp_path / ".scopepilot" / "sessions" /
+               f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl")
+    assert logfile.exists()
+    events = [json.loads(l)["event"] for l in logfile.read_text().splitlines()]
+    assert "goto" in events and "track" in events
+
+
+# -- rise / set / transit ------------------------------------------------------------
+
+def test_rise_set_transit_sane():
+    rise, set_, transit = bridge._rise_set_transit(
+        5.588, -5.391, 43.3767, -80.9809)  # M42: rises and sets nightly
+    assert rise and set_ and transit
+    assert rise < transit < set_
+
+
+def test_tonight_has_rise_set(api):
+    code, j = _get(api, "/api/tonight")
+    assert code == 200
+    assert any(t.get("rise_utc") for t in j["targets"])
+
+
+# -- timed goto -----------------------------------------------------------------------
+
+def test_seconds_until():
+    from scopepilot.cli import _seconds_until
+    assert 0 < _seconds_until("23:59") <= 86400
+    assert _seconds_until("99:99") is None
+    assert _seconds_until("nope") is None
+
+
+# -- site profiles ----------------------------------------------------------------------
+
+def test_site_profiles_crud(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ctl = TelescopeController(SimBackend())
+    prof = ctl.save_site_profile("dark", 44.0, -81.0, 15.0, 88.0)
+    assert prof["lat_deg"] == 44.0
+    data = ctl.list_site_profiles()
+    assert "dark" in data["profiles"]
+    out = ctl.apply_site_profile("dark")
+    assert ctl.site_lat == 44.0 and ctl.min_alt == 15.0
+    assert out["name"] == "dark"
+    ctl.delete_site_profile("dark")
+    assert ctl.list_site_profiles()["profiles"] == {}
+    with pytest.raises(ValueError):
+        ctl.apply_site_profile("dark")
+    with pytest.raises(ValueError):
+        ctl.save_site_profile("bad", 100.0, 0.0)
+
+
+def test_site_routes(api):
+    code, j = _post(api, "/api/sites",
+                    {"name": "home", "lat_deg": 43.0, "lon_deg": -81.0,
+                     "min_alt_deg": 20.0, "max_alt_deg": None})
+    assert code == 200
+    code, j = _get(api, "/api/sites")
+    assert "home" in j["profiles"]
+    code, j = _post(api, "/api/sites/use", {"name": "home"})
+    assert code == 200 and j["profile"]["lat_deg"] == 43.0
+    code, j = _get(api, "/api/limits")
+    assert j["min_alt_deg"] == 20.0  # limits came along with the profile
+    code, j = _delete(api, "/api/sites?name=home")
+    assert code == 200

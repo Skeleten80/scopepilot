@@ -7,6 +7,7 @@ park-as-a-sequence, clock/site setup); backends own the wire.
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 
@@ -39,6 +40,18 @@ class NotConnectedError(NexStarError):
     pass
 
 
+class SlewLimitError(NexStarError):
+    """Target is outside the configured slew limits."""
+
+
+def default_sites_path() -> Path:
+    return Path.home() / ".scopepilot" / "sites.json"
+
+
+def default_session_dir() -> Path:
+    return Path.home() / ".scopepilot" / "sessions"
+
+
 class TelescopeController:
     """Operator-facing telescope control.
 
@@ -58,6 +71,8 @@ class TelescopeController:
         home_alt: float = 5.0,
         pending_path=None,
         user_objects_path=None,
+        min_alt: float | None = None,
+        max_alt: float | None = None,
     ) -> None:
         self.backend = backend
         self.site_lat = site_lat
@@ -66,6 +81,14 @@ class TelescopeController:
         self.home_alt = home_alt
         self.parked = False
         self._connected = False
+        # Safety: slew limits (None = no limit).
+        self.min_alt = min_alt
+        self.max_alt = max_alt
+        # Depth 1: plate solves refine the pointing model live.
+        self.adaptive_pointing = True
+        # First-light checklist state.
+        self._goto_ok = False
+        self._backlash_configured = False
         # Software pointing model (Depth 1 HC replacement): when active,
         # goto_radec converts to alt-az through the model and needs no
         # hand-controller alignment at all.
@@ -79,6 +102,79 @@ class TelescopeController:
         self._user_objects_path = (Path(user_objects_path)
                                    if user_objects_path
                                    else default_user_objects_path())
+        # Session log: JSON-lines, one file per night, never raises.
+        self._session_log_path = (default_session_dir() /
+                                  utcnow().strftime("%Y-%m-%d.jsonl"))
+
+    def _log_event(self, event: str, **fields) -> None:
+        """Append one event to tonight's session log (best effort)."""
+        try:
+            self._session_log_path.parent.mkdir(parents=True, exist_ok=True)
+            rec = {"t": utcnow().isoformat(timespec="seconds") + "Z",
+                   "event": event, **fields}
+            with self._session_log_path.open("a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+
+    # -- slew limits ---------------------------------------------------------
+    def _check_slew_limits(self, az_deg: float, alt_deg: float) -> None:
+        if self.min_alt is not None and alt_deg < self.min_alt:
+            raise SlewLimitError(
+                f"target alt {alt_deg:.1f}° is below the slew limit "
+                f"({self.min_alt:.1f}°)")
+        if self.max_alt is not None and alt_deg > self.max_alt:
+            raise SlewLimitError(
+                f"target alt {alt_deg:.1f}° is above the slew limit "
+                f"({self.max_alt:.1f}°)")
+
+    def set_slew_limits(
+        self,
+        min_alt: float | None,
+        max_alt: float | None,
+    ) -> None:
+        """Set altitude slew limits (None clears). Persists via config."""
+        for label, v in (("min_alt", min_alt), ("max_alt", max_alt)):
+            if v is not None and not 0.0 <= v <= 90.0:
+                raise ValueError(f"{label} must be 0-90° or None")
+        if (min_alt is not None and max_alt is not None
+                and min_alt >= max_alt):
+            raise ValueError("min_alt must be below max_alt")
+        self.min_alt, self.max_alt = min_alt, max_alt
+        self._log_event("limits", min_alt_deg=min_alt, max_alt_deg=max_alt)
+
+    # -- spiral search (lost-target recovery) ----------------------------------
+    def spiral_waypoints(
+        self,
+        az_deg: float | None = None,
+        alt_deg: float | None = None,
+        max_radius_deg: float = 2.0,
+        step_deg: float = 0.5,
+    ) -> list[tuple[float, float]]:
+        """Archimedean spiral waypoints around a center (degrees).
+
+        Centers on the current position when az/alt are omitted. Arm
+        spacing is ~*step_deg*; the dashboard walks these one by one
+        until the operator spots the target and stops the search.
+        """
+        if az_deg is None or alt_deg is None:
+            st = self.status()
+            az_deg, alt_deg = st.az_deg, st.alt_deg
+        if not 0 < step_deg <= max_radius_deg:
+            raise ValueError("need 0 < step_deg <= max_radius_deg")
+        arm = step_deg / (2.0 * math.pi)  # r = arm * theta
+        points = [(az_deg % 360.0, alt_deg)]
+        theta = 0.0
+        while True:
+            r = arm * theta
+            if r > max_radius_deg:
+                break
+            theta += step_deg / max(r, step_deg)
+            r = arm * theta
+            az_p = (az_deg + r * math.cos(theta)) % 360.0
+            alt_p = min(89.0, max(-89.0, alt_deg + r * math.sin(theta)))
+            points.append((az_p, alt_p))
+        return points
 
     # -- lifecycle -------------------------------------------------------
     def connect(self) -> "TelescopeController":
@@ -166,13 +262,22 @@ class TelescopeController:
                                    timeout=timeout, settle=settle)
         self.require_aligned()
         self.parked = False
+        if self.site_lat is not None and self.site_lon is not None:
+            _az, _alt = radec_to_altaz(
+                ra_hours, dec_deg, self.site_lat, self.site_lon, utcnow())
+            self._check_slew_limits(_az, _alt)
         self._record_pre_goto()
         self.backend.goto_radec(ra_hours, dec_deg)
         if not wait:
+            self._log_event("goto", ra_hours=ra_hours, dec_deg=dec_deg,
+                            settled=None)
             return False
         ok = self.backend.wait_goto(timeout)
         if ok and settle > 0:
             time.sleep(settle)
+        self._goto_ok = bool(ok)
+        self._log_event("goto", ra_hours=ra_hours, dec_deg=dec_deg,
+                        settled=bool(ok))
         return ok
 
     def _record_pre_goto(self) -> None:
@@ -205,13 +310,19 @@ class TelescopeController:
     ) -> bool:
         self._require_connected()
         self.parked = False
+        self._check_slew_limits(az_deg, alt_deg)
         self._record_pre_goto()
         self.backend.goto_altaz(az_deg, alt_deg)
         if not wait:
+            self._log_event("goto", az_deg=az_deg, alt_deg=alt_deg,
+                            settled=None)
             return False
         ok = self.backend.wait_goto(timeout)
         if ok and settle > 0:
             time.sleep(settle)
+        self._goto_ok = bool(ok)
+        self._log_event("goto", az_deg=az_deg, alt_deg=alt_deg,
+                        settled=bool(ok))
         return ok
 
     def goto_target(
@@ -230,6 +341,7 @@ class TelescopeController:
         self._require_connected()
         self.require_aligned()
         self.backend.sync_radec(ra_hours, dec_deg)
+        self._log_event("sync", ra_hours=ra_hours, dec_deg=dec_deg)
 
     def sync_target(self, name: str) -> tuple[float, float, str]:
         ra, dec, source = resolve_target(name)
@@ -256,6 +368,7 @@ class TelescopeController:
         else:
             mode_id = int(mode)
         self.backend.set_tracking(mode_id)
+        self._log_event("track", mode=nexstar.TRACKING_MODES[mode_id])
         return nexstar.TRACKING_MODES[mode_id]
 
     # -- manual jog ------------------------------------------------------------
@@ -308,6 +421,7 @@ class TelescopeController:
                              wait=wait, timeout=timeout)
         self.set_tracking("off")
         self.parked = True
+        self._log_event("park", settled=bool(ok))
         return ok
 
     def unpark(self) -> None:
@@ -315,6 +429,7 @@ class TelescopeController:
         self._require_connected()
         self.parked = False
         self.set_tracking("alt-az")
+        self._log_event("unpark")
 
     # -- clock / site ------------------------------------------------------------
     def sync_clock(self) -> dict:
@@ -340,7 +455,83 @@ class TelescopeController:
         self.backend.set_hc_location(lat_deg, lon_deg)
         self.site_lat, self.site_lon = lat_deg, lon_deg
 
+    # -- site profiles -----------------------------------------------------------
+    def _read_sites(self) -> dict:
+        try:
+            data = json.loads(default_sites_path().read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("profiles", {})
+        data.setdefault("active", None)
+        return data
+
+    def _write_sites(self, data: dict) -> None:
+        p = default_sites_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2))
+
+    def list_site_profiles(self) -> dict:
+        """{'profiles': {name: {...}}, 'active': name|None}."""
+        return self._read_sites()
+
+    def save_site_profile(
+        self,
+        name: str,
+        lat_deg: float,
+        lon_deg: float,
+        min_alt: float | None = None,
+        max_alt: float | None = None,
+    ) -> dict:
+        """Save a named site profile (location + slew limits)."""
+        clean = name.strip()
+        if not clean:
+            raise ValueError("profile name must not be empty")
+        if not -90.0 <= lat_deg <= 90.0 or not -180.0 <= lon_deg <= 180.0:
+            raise ValueError("latitude must be -90..90, longitude -180..180")
+        data = self._read_sites()
+        data["profiles"][clean] = {
+            "lat_deg": float(lat_deg), "lon_deg": float(lon_deg),
+            "min_alt_deg": min_alt, "max_alt_deg": max_alt,
+        }
+        self._write_sites(data)
+        return data["profiles"][clean]
+
+    def delete_site_profile(self, name: str) -> None:
+        data = self._read_sites()
+        key = name.strip()
+        if key not in data["profiles"]:
+            raise ValueError(f"no site profile named {name!r}")
+        del data["profiles"][key]
+        if data["active"] == key:
+            data["active"] = None
+        self._write_sites(data)
+
+    def apply_site_profile(self, name: str) -> dict:
+        """Activate a profile: sets site + slew limits on this controller."""
+        data = self._read_sites()
+        key = name.strip()
+        if key not in data["profiles"]:
+            raise ValueError(f"no site profile named {name!r}")
+        prof = data["profiles"][key]
+        self.site_lat = prof["lat_deg"]
+        self.site_lon = prof["lon_deg"]
+        self.set_slew_limits(prof.get("min_alt_deg"), prof.get("max_alt_deg"))
+        data["active"] = key
+        self._write_sites(data)
+        self._log_event("site", profile=key, lat_deg=self.site_lat,
+                        lon_deg=self.site_lon)
+        return {"name": key, **prof}
+
     # -- hand-controller info / utilities --------------------------------------
+    def get_hc_location(self) -> tuple[float, float] | None:
+        """Read the HC's stored site; None when the backend can't."""
+        self._require_connected()
+        try:
+            return self.backend.get_hc_location()
+        except NotImplementedError:
+            return None
     def hc_info(self) -> dict:
         """Hand-controller info panel: model, firmware, clock, GPS, bus."""
         self._require_connected()
@@ -360,6 +551,9 @@ class TelescopeController:
         """Anti-backlash 0-99 for one axis/direction (HC Utilities menu)."""
         self._require_connected()
         self.backend.set_backlash(axis, direction, value)
+        self._backlash_configured = True
+        self._log_event("backlash", axis=axis, direction=direction,
+                        value=value)
 
     def get_backlash(self, axis: str, direction: int) -> int:
         self._require_connected()
@@ -368,6 +562,7 @@ class TelescopeController:
     def set_cordwrap(self, enabled: bool) -> None:
         self._require_connected()
         self.backend.set_cordwrap(enabled)
+        self._log_event("cordwrap", enabled=bool(enabled))
 
     def cordwrap_enabled(self) -> bool:
         self._require_connected()
@@ -546,7 +741,56 @@ class TelescopeController:
             "alt_offset_deg": p.alt_offset,
             "rms_arcmin": p.rms_arcmin,
             "created": p.created,
+            "residuals": [
+                {"name": s.name, "residual_arcmin": r}
+                for s, r in sorted(
+                    zip(p.stars, p.residuals_arcmin()),
+                    key=lambda t: -t[1])
+            ],
         }
+
+    def refine_with_solve(
+        self, ra_true_h: float, dec_true_d: float
+    ) -> dict | None:
+        """Fold a converged plate solve into the pointing model.
+
+        Pairs the mount's current reported alt-az with the true alt-az of
+        (*ra_true_h*, *dec_true_d*) as a new sync star and refits. Returns
+        a status dict, or None when there is nothing usable to refine
+        with (no site, < 2 stars total, serial/sim-only readout missing).
+        """
+        if self.site_lat is None or self.site_lon is None:
+            return None
+        try:
+            st = self.status()
+        except NexStarError:
+            return None
+        if st.az_deg is None or st.alt_deg is None:
+            return None
+        now = utcnow()
+        az, alt = radec_to_altaz(ra_true_h, dec_true_d,
+                                 self.site_lat, self.site_lon, now)
+        stars = list(self.pointing.stars) if self.pointing else []
+        stars += self._sync_stars
+        star = SyncStar(name=f"solve-{len(stars) + 1}", true_az=az,
+                        true_alt=alt, reported_az=st.az_deg,
+                        reported_alt=st.alt_deg, at=now.timestamp())
+        stars.append(star)
+        if len(stars) < 2:
+            return None
+        # Bound the model: keep the newest 12 stars.
+        stars = stars[-12:]
+        self.pointing = PointingModel.fit(
+            stars, site_lat=self.site_lat, site_lon=self.site_lon)
+        self._sync_stars = []
+        try:
+            self.save_pointing()
+        except NexStarError:
+            pass
+        self._log_event("refine", stars=len(stars),
+                        rms_arcmin=round(self.pointing.rms_arcmin, 2))
+        return {"stars": len(stars),
+                "rms_arcmin": self.pointing.rms_arcmin}
 
     def center_target(
         self,

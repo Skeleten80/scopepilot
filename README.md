@@ -169,6 +169,25 @@ language — no menus to memorize:
 A 🌙 Night button switches the whole page to deep-red light so it won't
 ruin your dark adaptation at the scope.
 
+More things the console does beyond the HC:
+
+- **First-light checklist** — a guided once-per-setup flow (connect →
+  clock/site → backlash → align → test slew) with live pass/fail states.
+- **Slew limits** — refuse gotos below your roofline/trees or near the
+  zenith fork limit. Set from the dashboard or
+  `scopepilot limits --min-alt 20 --max-alt 85` (saved to config).
+- **Spiral search** — target not in the eyepiece? Walks an expanding
+  spiral around the last goto until you spot it and hit stop.
+- **Per-star residuals** — after building the pointing model, see each
+  star's residual; the outlier gets flagged ("⚠ recenter me?").
+- **Adaptive pointing** — every converged plate solve quietly refines the
+  model (toggle in the alignment panel; newest 12 stars kept).
+- **Sky Tour** — auto-walks tonight's best list with a configurable dwell
+  per target. Rise / transit / set times shown in your local time.
+- **Site profiles** — save named sites (location + limits), apply with one
+  click: `scopepilot site save dark --lat 44.1 --lon -79.5 --min-alt 15`.
+- **Keyboard** — arrow keys jog, spacebar stops everything.
+
 ## Working alongside AstroCapture
 
 **Option A — shared indiserver (recommended while imaging).**
@@ -214,6 +233,10 @@ if (check_manual_override("http://127.0.0.1:8765") or {}).get("claimed"):
 | `bus-scan` | enumerate AUX-bus devices |
 | `backlash --axis az --dir + [--value N]` | get/set anti-backlash 0-99 (stored in the mount) |
 | `cordwrap [on\|off]` | get/set cord wrap |
+| `limits [--min-alt N] [--max-alt N] [--clear]` | altitude slew limits (saved to config) |
+| `site list\|save\|use\|delete` | named site profiles (location + limits) |
+| `log [--tail N] [--date YYYY-MM-DD]` | tonight's session log |
+| `goto "M51" --at 23:10` | wait until local HH:MM, then slew |
 | `targets [query]` | catalog search |
 | `queue --plan night.yaml [--dwell N]` | slew the AstroCapture night plan |
 | `align [--star NAME] [--fit] [--status] [--clear] [--reuse]` | software pointing model, no HC menus |
@@ -237,7 +260,16 @@ Global flags: `--backend sim|serial|indi`, `--port`, `--config`, `--slew-rate`
 
 `POST` endpoints: `/api/goto`, `/api/sync`, `/api/jog`, `/api/jog_stop`,
 `/api/stop`, `/api/track`, `/api/park`, `/api/unpark`, `/api/claim`,
-`/api/release`. `GET /api/targets?q=` and `GET /api/plan?path=` round it out.
+`/api/release`, `/api/undo-goto`, `/api/align-fit`, `/api/align-clear`,
+`/api/sync-star`, `/api/center`, `/api/user-objects`, `/api/goto-user`,
+`/api/hc-sync`, `/api/backlash`, `/api/cordwrap`, `/api/limits`,
+`/api/sites`, `/api/sites/use`, `/api/adaptive`.
+`GET`: `/api/state`, `/api/targets?q=`, `/api/plan?path=`,
+`/api/pointing`, `/api/center-status`, `/api/align-stars`, `/api/tonight`,
+`/api/identify`, `/api/user-objects`, `/api/hc`, `/api/backlash`,
+`/api/cordwrap`, `/api/limits`, `/api/firstlight`, `/api/spiral`,
+`/api/sites`, `/api/adaptive`. `DELETE /api/user-objects?name=` and
+`DELETE /api/sites?name=` remove one.
 
 ## Layout
 
@@ -311,6 +343,12 @@ server and CLI are all tested end-to-end with no telescope attached.
   after a power cycle during the first shakedown to confirm.)
 - Slew-rate table (rates 1–9 → °/s) is approximate; Celestron publishes
   only the ~4°/s maximum for the SE series.
+- **Slew limits guard gotos, not the jog pad.** A goto outside your
+  min/max altitude is refused with an error; jogging is unclamped, so
+  don't hold an arrow into the fork.
+- Every slew, sync, centering, park, tracking change, and calibration is
+  appended to `~/.scopepilot/sessions/YYYY-MM-DD.jsonl` — `scopepilot log`
+  reads it back.
 - Time/location commands talk to the **HC**, not a GPS module. The 6SE
   has no onboard GPS; enter View Time/Site on the HC after a GPS fix if
   you add one.

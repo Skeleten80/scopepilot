@@ -126,7 +126,13 @@ class SimNexStar(threading.Thread):
         self._jog = {"az": 0.0, "alt": 0.0}  # signed deg/s
         self._backlash = {"az": [0, 0], "alt": [0, 0]}  # [pos, neg] 0-99
         self._cordwrap = False
-        self._time = encode_time(2026, 10, 3, 21, 0, 0, -4, True)
+        # Start with the computer's local time, like a real HC would show.
+        _now = time.localtime()
+        _off = -((time.altzone if _now.tm_isdst else time.timezone) / 3600.0)
+        self._time = encode_time(
+            _now.tm_year, _now.tm_mon, _now.tm_mday,
+            _now.tm_hour, _now.tm_min, _now.tm_sec,
+            _off, bool(_now.tm_isdst))
         self._location = encode_location(lat_deg, lon_deg)
         self._last = time.monotonic()
 

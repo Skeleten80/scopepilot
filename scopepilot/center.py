@@ -71,6 +71,11 @@ def closed_loop_center(
              f"({sep:.2f}' from target)")
         if sep <= tolerance_arcmin:
             emit(f"converged: {sep:.2f}' <= {tolerance_arcmin:.2f}'")
+            if getattr(controller, "adaptive_pointing", False):
+                refined = controller.refine_with_solve(ra_h, dec_d)
+                if refined:
+                    emit(f"pointing model refined: {refined['stars']} stars, "
+                         f"RMS {refined['rms_arcmin']:.1f}'")
             return {"converged": True, "iters": it,
                     "final_sep_arcmin": sep, "events": events}
 

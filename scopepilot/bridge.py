@@ -155,6 +155,42 @@ def search_targets(query: str, limit: int = 12) -> list[dict]:
     return deduped[:limit]
 
 
+def _rise_set_transit(
+    ra_h: float,
+    dec_d: float,
+    lat: float,
+    lon: float,
+    min_alt_deg: float = 20.0,
+    step_min: int = 5,
+) -> tuple[str | None, str | None, str | None]:
+    """(rise_utc, set_utc, transit_utc) ISO strings over the next 24 h.
+
+    Rise/set are crossings of *min_alt_deg*; transit is peak altitude.
+    """
+    from datetime import timedelta
+
+    from scopepilot.astro import radec_to_altaz, utcnow
+
+    now = utcnow()
+    n = int(24 * 60 / step_min)
+    samples = []
+    for i in range(n + 1):
+        t = now + timedelta(minutes=i * step_min)
+        _az, alt = radec_to_altaz(ra_h, dec_d, lat, lon, t)
+        samples.append((t, alt))
+    transit = max(samples, key=lambda p: p[1])[0]
+    rise = set_ = None
+    for i in range(1, len(samples)):
+        prev_alt, alt = samples[i - 1][1], samples[i][1]
+        if rise is None and prev_alt < min_alt_deg <= alt:
+            rise = samples[i][0]
+        elif rise is not None and prev_alt >= min_alt_deg > alt:
+            set_ = samples[i][0]
+            break
+    iso = lambda t: t.isoformat(timespec="minutes") if t else None  # noqa: E731
+    return iso(rise), iso(set_), iso(transit)
+
+
 def tonight_list(
     lat: float, lon: float, limit: int = 12, min_alt_deg: float = 20.0
 ) -> tuple[list[dict], str]:
@@ -178,6 +214,9 @@ def tonight_list(
                              if r.get("peak_alt_deg") is not None else None),
             "hours_above": (round(float(r["hours_above"]), 1)
                             if r.get("hours_above") is not None else None),
+            "rise_utc": r.get("rise_utc"),
+            "set_utc": r.get("set_utc"),
+            "transit_utc": r.get("peak_time_utc"),
         } for r in rows]
         return items, "astrocapture-catalog"
     except Exception:
@@ -190,10 +229,13 @@ def tonight_list(
         except Exception:
             continue
         if alt >= min_alt_deg:
+            rise, set_, transit = _rise_set_transit(
+                ra, dec, lat, lon, min_alt_deg)
             rows.append({
                 "name": name, "type": None, "mag": None,
                 "constellation": None, "alt_now_deg": round(alt, 1),
                 "peak_alt_deg": None, "hours_above": None,
+                "rise_utc": rise, "set_utc": set_, "transit_utc": transit,
             })
     rows.sort(key=lambda r: -r["alt_now_deg"])
     return rows[:limit], "scopepilot-builtin"

@@ -87,16 +87,21 @@ class PointingModel:
         return model
 
     def _rms(self) -> float:
-        if len(self.stars) < 2:
+        res = self.residuals_arcmin()
+        if not res:
             return 0.0
-        sq = 0.0
+        return math.sqrt(sum(r * r for r in res) / len(res))
+
+    def residuals_arcmin(self) -> list[float]:
+        """Per-star sky separation of predicted vs true, in arcminutes."""
+        out = []
         for s in self.stars:
             paz, palt = self.to_true(s.reported_az, s.reported_alt)
             # small-angle sky separation of predicted vs true
             d_az = wrap180(paz - s.true_az) * math.cos(math.radians(s.true_alt))
             d_alt = palt - s.true_alt
-            sq += d_az * d_az + d_alt * d_alt
-        return math.sqrt(sq / len(self.stars)) * 60.0
+            out.append(math.hypot(d_az, d_alt) * 60.0)
+        return out
 
     # -- use ---------------------------------------------------------------
     def to_true(self, rep_az: float, rep_alt: float) -> tuple[float, float]:

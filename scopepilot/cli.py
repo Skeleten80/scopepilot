@@ -19,6 +19,7 @@ Shared with AstroCapture's indiserver (no serial fight)::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 
@@ -65,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--alt", type=float, help="altitude deg (with --az)")
     g.add_argument("--no-wait", action="store_true", help="return immediately")
     g.add_argument("--timeout", type=float, default=300.0)
+    g.add_argument("--at", default=None, metavar="HH:MM",
+                   help="wait until local time HH:MM, then slew")
 
     s2 = sub.add_parser("sync", help="sync on the centered object")
     s2.add_argument("name", nargs="?", help="target name (catalog lookup)")
@@ -101,6 +104,29 @@ def build_parser() -> argparse.ArgumentParser:
     cw = sub.add_parser("cordwrap", help="get/set cord wrap")
     cw.add_argument("state", nargs="?", choices=["on", "off"],
                     help="omit to read the current state")
+    lim = sub.add_parser("limits", help="get/set altitude slew limits")
+    lim.add_argument("--min-alt", type=float, default=None,
+                     help="refuse gotos below this altitude (deg)")
+    lim.add_argument("--max-alt", type=float, default=None,
+                     help="refuse gotos above this altitude (deg)")
+    lim.add_argument("--clear", action="store_true",
+                     help="remove both limits")
+    lg = sub.add_parser("log", help="show the session log")
+    lg.add_argument("--tail", type=int, default=30)
+    lg.add_argument("--date", default=None, help="YYYY-MM-DD (default today)")
+    sp = sub.add_parser("site", help="named site profiles")
+    ssub = sp.add_subparsers(dest="site_cmd", required=True)
+    ssub.add_parser("list", help="list saved site profiles")
+    ss = ssub.add_parser("save", help="save a site profile")
+    ss.add_argument("name")
+    ss.add_argument("--lat", type=float, required=True)
+    ss.add_argument("--lon", type=float, required=True)
+    ss.add_argument("--min-alt", type=float, default=None)
+    ss.add_argument("--max-alt", type=float, default=None)
+    su = ssub.add_parser("use", help="apply a profile to the config")
+    su.add_argument("name")
+    sd = ssub.add_parser("delete", help="delete a profile")
+    sd.add_argument("name")
     sub.add_parser("targets", help="list / search known targets").add_argument(
         "query", nargs="?", default="")
 
@@ -153,7 +179,10 @@ def _controller(args: argparse.Namespace, cfg: ScopeConfig) -> TelescopeControll
         site_lon=cfg.site_lon,
         home_az=cfg.home_az,
         home_alt=cfg.home_alt,
+        min_alt=cfg.min_alt_deg,
+        max_alt=cfg.max_alt_deg,
     )
+    scope.adaptive_pointing = cfg.adaptive_pointing
     # Pick up the saved pointing model automatically: every goto then
     # routes through it with no HC alignment. Only valid if the power-on
     # pose matches the alignment session (see `align --help`).
@@ -239,6 +268,23 @@ def cmd_status(args, cfg) -> int:
     return 0
 
 
+def _seconds_until(hhmm: str) -> float | None:
+    """Seconds from now until the next local HH:MM (today or tomorrow)."""
+    try:
+        hh, mm = hhmm.split(":")
+        hour, minute = int(hh), int(mm)
+        if not 0 <= hour < 24 or not 0 <= minute < 60:
+            return None
+    except ValueError:
+        return None
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
 def _goto_args(args) -> tuple[str, tuple]:
     if args.name:
         return "name", (args.name,)
@@ -251,6 +297,18 @@ def _goto_args(args) -> tuple[str, tuple]:
 
 def cmd_goto(args, cfg) -> int:
     kind, vals = _goto_args(args)
+    if args.at:
+        wait_s = _seconds_until(args.at)
+        if wait_s is None:
+            print("ERROR: --at needs HH:MM (24 h local time)",
+                  file=sys.stderr)
+            return 2
+        print(f"waiting {wait_s / 60:.1f} min until {args.at} … (Ctrl-C to cancel)")
+        try:
+            time.sleep(wait_s)
+        except KeyboardInterrupt:
+            print("\ncancelled")
+            return 130
     with _controller(args, cfg) as scope:
         try:
             if kind == "name":
@@ -266,7 +324,7 @@ def cmd_goto(args, cfg) -> int:
             if not args.no_wait:
                 print("settled ✓" if ok else "TIMEOUT waiting for slew")
                 return 0 if ok else 1
-        except AlignmentError as exc:
+        except (AlignmentError, NexStarError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
     return 0
@@ -407,6 +465,99 @@ def cmd_cordwrap(args, cfg) -> int:
     return 0
 
 
+def cmd_limits(args, cfg) -> int:
+    from scopepilot.config import save_config
+    if args.clear:
+        cfg.min_alt_deg = cfg.max_alt_deg = None
+    elif args.min_alt is None and args.max_alt is None:
+        pass  # show only
+    else:
+        if args.min_alt is not None:
+            cfg.min_alt_deg = args.min_alt
+        if args.max_alt is not None:
+            cfg.max_alt_deg = args.max_alt
+    # validate through a throwaway controller before persisting
+    with _controller(args, cfg) as scope:
+        try:
+            scope.set_slew_limits(cfg.min_alt_deg, cfg.max_alt_deg)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+    save_config(cfg, args.config)
+    lo = "—" if cfg.min_alt_deg is None else f"{cfg.min_alt_deg:.1f}°"
+    hi = "—" if cfg.max_alt_deg is None else f"{cfg.max_alt_deg:.1f}°"
+    print(f"slew limits: min alt {lo}, max alt {hi} (saved to config)")
+    return 0
+
+
+def cmd_log(args, cfg) -> int:
+    from scopepilot.controller import default_session_dir
+    date = args.date or time.strftime("%Y-%m-%d")
+    path = default_session_dir() / f"{date}.jsonl"
+    if not path.exists():
+        print(f"no session log for {date}")
+        return 1
+    lines = path.read_text().splitlines()[-args.tail:]
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = rec.pop("t", "?")
+        ev = rec.pop("event", "?")
+        rest = " ".join(f"{k}={v}" for k, v in rec.items())
+        print(f"{t} {ev} {rest}".rstrip())
+    return 0
+
+
+def cmd_site(args, cfg) -> int:
+    from scopepilot.backends import make_backend
+    from scopepilot.config import save_config
+    from scopepilot.controller import TelescopeController
+    backend = make_backend_from_config(cfg)
+    scope = TelescopeController(backend)  # no connection needed
+    if args.site_cmd == "list":
+        data = scope.list_site_profiles()
+        for name, prof in data["profiles"].items():
+            mark = " *" if name == data["active"] else ""
+            print(f"{name}{mark}: lat {prof['lat_deg']}, lon {prof['lon_deg']}, "
+                  f"limits {prof.get('min_alt_deg')}/{prof.get('max_alt_deg')}")
+        if not data["profiles"]:
+            print("no site profiles saved")
+        return 0
+    if args.site_cmd == "save":
+        try:
+            prof = scope.save_site_profile(
+                args.name, args.lat, args.lon, args.min_alt, args.max_alt)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"saved site profile {args.name!r}: {prof}")
+        return 0
+    if args.site_cmd == "delete":
+        try:
+            scope.delete_site_profile(args.name)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"deleted site profile {args.name!r}")
+        return 0
+    # use: apply profile values into the config file
+    try:
+        prof = scope.apply_site_profile(args.name)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    cfg.site_lat = prof["lat_deg"]
+    cfg.site_lon = prof["lon_deg"]
+    cfg.min_alt_deg = prof.get("min_alt_deg")
+    cfg.max_alt_deg = prof.get("max_alt_deg")
+    save_config(cfg, args.config)
+    print(f"using site {args.name!r}: lat {cfg.site_lat}, lon {cfg.site_lon} "
+          f"(saved to config)")
+    return 0
+
+
 def cmd_targets(args, cfg) -> int:
     for r in bridge.search_targets(args.query, limit=30):
         print(f"{r['name']:10s} RA {_fmt_ra(r['ra_hours'])} "
@@ -424,7 +575,7 @@ def cmd_dash(args, cfg) -> int:
     with _controller(args, cfg) as scope:
         serve(scope, host=args.host,
               port=args.http_port or cfg.server_port,
-              make_rig=make_rig)
+              make_rig=make_rig, config=cfg, config_path=args.config)
     return 0
 
 
@@ -454,7 +605,7 @@ def cmd_queue(args, cfg) -> int:
                       f"(RA {_fmt_ra(ra)} Dec {_fmt_deg(dec)} [{src}])…")
                 try:
                     ok = scope.goto_radec(ra, dec, timeout=args.timeout)
-                except AlignmentError as exc:
+                except (AlignmentError, NexStarError) as exc:
                     print(f"  ERROR: {exc}", file=sys.stderr)
                     return 2
                 print("  settled ✓" if ok else "  TIMEOUT -- continuing")
@@ -620,6 +771,9 @@ _COMMANDS = {
     "bus-scan": cmd_bus_scan,
     "backlash": cmd_backlash,
     "cordwrap": cmd_cordwrap,
+    "limits": cmd_limits,
+    "log": cmd_log,
+    "site": cmd_site,
     "targets": cmd_targets,
     "dash": cmd_dash,
     "server": cmd_server,

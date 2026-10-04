@@ -89,6 +89,11 @@ class Backend(abc.ABC):
     @abc.abstractmethod
     def set_hc_location(self, lat_deg: float, lon_deg: float) -> None: ...
 
+    def get_hc_location(self) -> tuple[float, float] | None:
+        """Read the HC's stored site (optional)."""
+        raise NotImplementedError(
+            f"{self.name} backend cannot read the HC site")
+
     @abc.abstractmethod
     def wait_goto(self, timeout: float) -> bool:
         """Block until the slew finishes; True == settled in time."""
@@ -221,6 +226,9 @@ class SerialBackend(Backend):
     def set_hc_location(self, lat_deg: float, lon_deg: float) -> None:
         self._d().set_location(lat_deg, lon_deg)
 
+    def get_hc_location(self) -> tuple[float, float]:
+        return self._d().get_location()
+
     def wait_goto(self, timeout: float) -> bool:
         d = self._d()
         deadline = time.monotonic() + timeout
@@ -342,6 +350,9 @@ class SimBackend(Backend):
 
     def set_hc_location(self, lat_deg: float, lon_deg: float) -> None:
         self._serial_view().set_hc_location(lat_deg, lon_deg)
+
+    def get_hc_location(self) -> tuple[float, float]:
+        return self._serial_view().get_hc_location()
 
     def set_backlash(self, axis: str, direction: int, value: int) -> None:
         self._serial_view().set_backlash(axis, direction, value)

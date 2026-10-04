@@ -105,6 +105,16 @@ body.night #log{background:#0d0202}
 </header>
 
 <main>
+  <section class="card" id="card-firstlight">
+    <h2>First light checklist <small>— run once per new setup</small></h2>
+    <div class="list" id="firstlight-list">
+      <div class="hint">checking…</div>
+    </div>
+    <div class="row">
+      <button id="btn-fl-recheck" class="ghost">↻ Re-check</button>
+    </div>
+  </section>
+
   <section class="card">
     <h2>Where it&rsquo;s pointing</h2>
     <div class="bigcoords">
@@ -134,6 +144,7 @@ body.night #log{background:#0d0202}
     <label for="rate">Slew speed: <b id="rate-label">5 · medium</b></label>
     <input type="range" id="rate" min="1" max="9" value="5" step="1">
     <div class="ratewords"><span>crawl</span><span>medium</span><span>fastest</span></div>
+    <div class="hint" style="margin-top:.4rem">Tip: arrow keys jog, <b>spacebar</b> stops everything.</div>
     <div class="row">
       <button id="btn-stop" class="danger">⏹ Stop everything</button>
     </div>
@@ -143,10 +154,24 @@ body.night #log{background:#0d0202}
     <h2>Go to something</h2>
     <input type="text" id="search" placeholder="Search: M31, Ring Nebula, Jupiter…" autocomplete="off">
     <div class="list" id="search-results"></div>
-    <h3>Tonight&rsquo;s best <button id="btn-tonight" class="ghost" title="Refresh">↻</button></h3>
+    <h3>Tonight&rsquo;s best
+      <button id="btn-tonight" class="ghost" title="Refresh">↻</button>
+      <span style="text-transform:none">
+        <input type="text" id="tour-dwell" value="5" inputmode="numeric"
+               title="Minutes per target" style="width:3.2em;display:inline-block;padding:.4rem">
+        <button id="btn-tour" class="ghost" title="Auto-walk the list">▶ Tour</button>
+        <button id="btn-tour-stop" class="ghost danger" style="display:none">■ Stop tour</button>
+      </span>
+    </h3>
     <div class="statusline" id="tonight-src"></div>
     <div class="list" id="tonight-list"></div>
     <div class="statusline" id="center-status" style="margin-top:.5rem"></div>
+    <div class="statusline" id="tour-status" style="margin-top:.3rem"></div>
+    <div class="row">
+      <button id="btn-spiral" class="ghost">🌀 Can&rsquo;t find it — spiral search</button>
+      <button id="btn-spiral-stop" class="ghost danger" style="display:none">■ Found it / stop</button>
+    </div>
+    <div class="statusline" id="spiral-status" style="margin-top:.3rem"></div>
     <h3>My saved objects</h3>
     <div class="row">
       <input type="text" id="newobj-name" placeholder="Name for the current view" style="flex:1;min-width:180px">
@@ -155,9 +180,14 @@ body.night #log{background:#0d0202}
     <div class="list" id="user-objects"></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="card-align">
     <h2>Alignment <small>— no hand controller needed</small></h2>
     <div class="model-status" id="model-status">checking…</div>
+    <div class="list" id="residuals-list" style="margin-bottom:.8rem"></div>
+    <label class="switch" style="margin-bottom:.8rem">
+      <input type="checkbox" id="adaptive" checked>
+      <span>Refine the model from each plate solve</span>
+    </label>
     <div id="align-wizard">
       <p class="hint">Center 2–3 bright stars in the eyepiece and record each one.
         Afterwards the mount knows where everything is — no menus on the hand controller.</p>
@@ -184,6 +214,26 @@ body.night #log{background:#0d0202}
       <button id="btn-park">🅿 Park</button>
       <button id="btn-unpark">Unpark</button>
       <button id="btn-undo" disabled>↩ Undo GoTo</button>
+    </div>
+    <h3>Slew limits <small style="text-transform:none">safety</small></h3>
+    <p class="hint" style="margin:.2rem 0 .5rem">Refuse gotos outside these altitudes — keeps the tube off the fork and out of the trees.</p>
+    <div class="row">
+      <label>Min alt° <input type="text" id="limit-min" inputmode="decimal"
+             style="width:5em;display:inline-block" placeholder="—"></label>
+      <label>Max alt° <input type="text" id="limit-max" inputmode="decimal"
+             style="width:5em;display:inline-block" placeholder="—"></label>
+      <button id="btn-limits-save">Save</button>
+      <button id="btn-limits-clear" class="ghost">Clear</button>
+    </div>
+    <h3>Site</h3>
+    <div class="row">
+      <select id="site-select" style="font-size:1.02rem;padding:.65rem;border-radius:12px;background:var(--card2);color:var(--text);border:1px solid var(--line);min-height:48px"></select>
+      <button id="btn-site-apply">Apply</button>
+      <button id="btn-site-delete" class="ghost danger">✕</button>
+    </div>
+    <div class="row">
+      <input type="text" id="site-name" placeholder="Name for this site" style="flex:1;min-width:160px">
+      <button id="btn-site-save">💾 Save current site</button>
     </div>
     <h3>Hand controller</h3>
     <dl class="kv" id="hc-info"><dt>loading…</dt><dd></dd></dl>
@@ -298,11 +348,13 @@ async function refreshPointing(){
     const p = d.pointing;
     const el = $("model-status");
     if(p && p.active){
-      el.innerHTML = `Pointing model <b>active</b> — ${p.n_stars} stars, ` +
+      el.innerHTML = `Pointing model <b>active</b> — ${p.stars} stars, ` +
         `RMS ${p.rms_arcmin.toFixed(1)}′ ` +
         `(az ${p.az_offset_deg.toFixed(2)}°, alt ${p.alt_offset_deg.toFixed(2)}°)`;
+      renderResiduals(p);
     }else{
       el.textContent = "No pointing model — gotos use the hand controller's alignment.";
+      $("residuals-list").innerHTML = "";
     }
   }catch(e){ $("model-status").textContent = "Pointing status unavailable."; }
 }
@@ -312,6 +364,7 @@ async function refreshTonight(){
   list.innerHTML = "";
   try{
     const d = await api("/api/tonight");
+    tonightTargets = d.targets || [];
     $("tonight-src").textContent =
       d.source === "astrocapture-catalog" ? "Ranked by AstroCapture's catalog" : "From the built-in bright list";
     for(const t of d.targets){
@@ -321,6 +374,13 @@ async function refreshTonight(){
       if(t.peak_alt_deg != null) bits.push(`peaks ${t.peak_alt_deg}°`);
       if(t.hours_above != null) bits.push(`${t.hours_above} h up`);
       if(t.alt_now_deg != null) bits.push(`now ${t.alt_now_deg}°`);
+      const rs = [];
+      const r = fmtLocal(t.rise_utc), tr = fmtLocal(t.transit_utc),
+            s2 = fmtLocal(t.set_utc);
+      if(r) rs.push("↑ " + r);
+      if(tr) rs.push("transit " + tr);
+      if(s2) rs.push("↓ " + s2);
+      if(rs.length) bits.push(rs.join(" · "));
       const row = document.createElement("div");
       row.className = "item";
       const grow = document.createElement("div");
@@ -597,11 +657,336 @@ function initNightMode(){
   };
 }
 
+let tonightTargets = [];
+
+function sleep(ms){ return new Promise((r) => setTimeout(r, ms)); }
+
+async function waitSettled(timeoutMs){
+  const end = Date.now() + (timeoutMs || 120000);
+  while(Date.now() < end){
+    try{
+      const s = await api("/api/state");
+      if(!s.slewing) return true;
+    }catch(e){ /* keep waiting */ }
+    await sleep(500);
+  }
+  return false;
+}
+
+function fmtLocal(iso){
+  if(!iso) return null;
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+
+async function refreshFirstlight(){
+  const box = $("firstlight-list");
+  try{
+    const d = await api("/api/firstlight");
+    box.innerHTML = "";
+    for(const s of d.steps){
+      const row = document.createElement("div");
+      row.className = "item";
+      const pill = document.createElement("span");
+      pill.className = "pill " + (s.state === "done" ? "ok" : s.state === "na" ? "" : "bad");
+      pill.textContent = s.state === "done" ? "✓" : s.state === "na" ? "–" : "○";
+      pill.title = s.state;
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = s.label;
+      const sub = document.createElement("div");
+      sub.className = "sub"; sub.textContent = s.detail || "";
+      grow.appendChild(nm); grow.appendChild(sub);
+      row.appendChild(pill); row.appendChild(grow);
+      const btn = firstlightAction(s);
+      if(btn) row.appendChild(btn);
+      box.appendChild(row);
+    }
+  }catch(e){ box.innerHTML = `<div class="hint">Checklist: ${e.message}</div>`; }
+}
+
+function firstlightAction(s){
+  const mk = (label, fn, primary) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if(primary) b.className = "primary";
+    b.onclick = async () => { await fn(); refreshFirstlight(); };
+    return b;
+  };
+  if(s.id === "clock" || s.id === "site"){
+    if(s.state === "done") return null;
+    return mk("Sync clock + site", async () => {
+      try{
+        await api("/api/hc-sync", {method: "POST", body: {}});
+        log("HC clock + site synced"); refreshHC();
+      }catch(e){ log("HC sync failed: " + e.message); }
+    }, true);
+  }
+  if(s.id === "backlash"){
+    if(s.state !== "pending") return null;
+    return mk("Open backlash", async () => {
+      document.querySelector("#card-firstlight").parentElement
+        .querySelectorAll(".card");
+      log("Set anti-backlash in the Telescope card, then re-check");
+    });
+  }
+  if(s.id === "align"){
+    if(s.state === "done") return null;
+    return mk("Alignment ↓", async () => {
+      $("card-align").scrollIntoView({behavior: "smooth"});
+      await loadAlignStars();
+    }, true);
+  }
+  if(s.id === "goto"){
+    if(s.state === "done") return null;
+    return mk("Test slew", async () => {
+      try{
+        await api("/api/goto", {method: "POST",
+          body: {az_deg: 180, alt_deg: 45}});
+        log("Test slew sent — waiting for settle…");
+        await waitSettled();
+        log("Test slew settled ✓");
+      }catch(e){ log("Test slew failed: " + e.message); }
+    }, true);
+  }
+  return null;
+}
+
+let spiralRunning = false;
+async function startSpiral(){
+  if(spiralRunning) return;
+  spiralRunning = true;
+  $("btn-spiral").style.display = "none";
+  $("btn-spiral-stop").style.display = "";
+  try{
+    const d = await api("/api/spiral?max_radius_deg=2.0&step_deg=0.5");
+    const pts = d.waypoints;
+    log(`Spiral search: ${pts.length} points, 2° radius`);
+    for(let i = 0; i < pts.length && spiralRunning; i++){
+      const [az, alt] = pts[i];
+      $("spiral-status").innerHTML =
+        `Spiral search… point <b>${i + 1}/${pts.length}</b> — watching the eyepiece?`;
+      await api("/api/goto", {method: "POST", body: {az_deg: az, alt_deg: alt}});
+      await waitSettled(30000);
+      if(!spiralRunning) break;
+      await sleep(1500);
+    }
+    $("spiral-status").innerHTML = spiralRunning
+      ? "Spiral complete — nothing in a 2° radius. Re-check alignment or widen the search."
+      : "Spiral stopped — happy observing.";
+    if(spiralRunning) log("Spiral search finished without a find");
+  }catch(e){
+    $("spiral-status").textContent = "Spiral failed: " + e.message;
+  }
+  spiralRunning = false;
+  $("btn-spiral").style.display = "";
+  $("btn-spiral-stop").style.display = "none";
+}
+
+let tourRunning = false;
+async function startTour(){
+  if(tourRunning) return;
+  if(!tonightTargets.length){ log("Tour: tonight's list is empty"); return; }
+  tourRunning = true;
+  $("btn-tour").style.display = "none";
+  $("btn-tour-stop").style.display = "";
+  const dwellMin = Math.max(0.5, parseFloat($("tour-dwell").value) || 5);
+  for(const t of tonightTargets){
+    if(!tourRunning) break;
+    $("tour-status").innerHTML = `Tour: slewing to <b>${t.name}</b>…`;
+    log("Tour → " + t.name);
+    try{
+      await api("/api/goto", {method: "POST", body: {name: t.name}});
+    }catch(e){
+      $("tour-status").textContent = "Tour stopped: " + e.message;
+      break;
+    }
+    await waitSettled();
+    const end = Date.now() + dwellMin * 60 * 1000;
+    while(tourRunning && Date.now() < end){
+      const left = Math.max(1, Math.ceil((end - Date.now()) / 60000));
+      $("tour-status").innerHTML =
+        `Tour: on <b>${t.name}</b> — ${left} min left`;
+      await sleep(5000);
+    }
+  }
+  $("tour-status").innerHTML =
+    tourRunning ? "Tour complete ✓" : "Tour stopped.";
+  log(tourRunning ? "Tour complete" : "Tour stopped");
+  tourRunning = false;
+  $("btn-tour").style.display = "";
+  $("btn-tour-stop").style.display = "none";
+}
+
+async function initLimits(){
+  const lo = $("limit-min"), hi = $("limit-max");
+  try{
+    const d = await api("/api/limits");
+    if(d.min_alt_deg != null) lo.value = d.min_alt_deg;
+    if(d.max_alt_deg != null) hi.value = d.max_alt_deg;
+  }catch(e){ /* leave blank */ }
+  const parse = (el) => el.value.trim() === "" ? null
+    : parseFloat(el.value.trim());
+  $("btn-limits-save").onclick = async () => {
+    try{
+      await api("/api/limits", {method: "POST",
+        body: {min_alt_deg: parse(lo), max_alt_deg: parse(hi)}});
+      log("Slew limits saved");
+    }catch(e){ log("Limits failed: " + e.message); }
+  };
+  $("btn-limits-clear").onclick = async () => {
+    try{
+      await api("/api/limits", {method: "POST",
+        body: {min_alt_deg: null, max_alt_deg: null}});
+      lo.value = ""; hi.value = "";
+      log("Slew limits cleared");
+    }catch(e){ log("Limits failed: " + e.message); }
+  };
+}
+
+async function refreshSites(){
+  const sel = $("site-select");
+  sel.innerHTML = "";
+  try{
+    const d = await api("/api/sites");
+    const names = Object.keys(d.profiles);
+    for(const name of names){
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name + (name === d.active ? " ★" : "");
+      sel.appendChild(o);
+    }
+    if(d.active) sel.value = d.active;
+    if(!names.length){
+      const o = document.createElement("option");
+      o.textContent = "— no saved sites —";
+      sel.appendChild(o);
+    }
+  }catch(e){ /* leave empty */ }
+}
+
+function initSites(){
+  $("btn-site-apply").onclick = async () => {
+    const name = $("site-select").value;
+    if(!name) return;
+    try{
+      const d = await api("/api/sites/use", {method: "POST", body: {name}});
+      log(`Site "${name}" applied (lat ${d.profile.lat_deg}, lon ${d.profile.lon_deg})`);
+      refreshSites(); initLimits(); refreshHC();
+    }catch(e){ log("Site apply failed: " + e.message); }
+  };
+  $("btn-site-delete").onclick = async () => {
+    const name = $("site-select").value;
+    if(!name) return;
+    try{
+      await api("/api/sites?name=" + encodeURIComponent(name),
+                {method: "DELETE"});
+      log(`Site "${name}" deleted`);
+      refreshSites();
+    }catch(e){ log("Site delete failed: " + e.message); }
+  };
+  $("btn-site-save").onclick = async () => {
+    const name = $("site-name").value.trim();
+    if(!name){ log("Name the site first"); return; }
+    try{
+      const s = await api("/api/state");
+      if(s.site_lat == null){ log("No site configured on the controller"); return; }
+      await api("/api/sites", {method: "POST",
+        body: {name, lat_deg: s.site_lat, lon_deg: s.site_lon,
+               min_alt_deg: s.min_alt_deg, max_alt_deg: s.max_alt_deg}});
+      $("site-name").value = "";
+      log(`Site "${name}" saved`);
+      refreshSites();
+    }catch(e){ log("Site save failed: " + e.message); }
+  };
+}
+
+async function initAdaptive(){
+  const box = $("adaptive");
+  try{
+    const d = await api("/api/adaptive");
+    box.checked = !!d.enabled;
+  }catch(e){ /* leave default */ }
+  box.onchange = async () => {
+    try{
+      await api("/api/adaptive", {method: "POST",
+        body: {enabled: box.checked}});
+      log("Adaptive pointing " + (box.checked ? "on" : "off"));
+    }catch(e){
+      log("Adaptive failed: " + e.message);
+      box.checked = !box.checked;
+    }
+  };
+}
+
+function initKeys(){
+  const jogKeys = {ArrowUp: "up", ArrowDown: "down",
+                   ArrowLeft: "left", ArrowRight: "right"};
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toLowerCase();
+    if(tag === "input" || tag === "textarea" || tag === "select") return;
+    if(e.key === " "){
+      e.preventDefault();
+      $("btn-stop").click();
+      return;
+    }
+    const dir = jogKeys[e.key];
+    if(dir && !e.repeat){
+      e.preventDefault();
+      api("/api/jog", {method: "POST",
+        body: {direction: dir, rate: slewRate()}}).catch(() => {});
+    }
+  });
+  document.addEventListener("keyup", (e) => {
+    if(jogKeys[e.key]){
+      api("/api/jog_stop", {method: "POST", body: {}}).catch(() => {});
+    }
+  });
+}
+
+function renderResiduals(p){
+  const box = $("residuals-list");
+  box.innerHTML = "";
+  const res = p.residuals || [];
+  if(res.length < 2) return;
+  const vals = res.map((r) => r.residual_arcmin).sort((a, b) => a - b);
+  const med = vals[Math.floor(vals.length / 2)];
+  const head = document.createElement("div");
+  head.className = "hint";
+  head.textContent = "Per-star residuals — a star far above the rest was probably mis-centered:";
+  box.appendChild(head);
+  for(const r of res){
+    const row = document.createElement("div");
+    row.className = "item";
+    const grow = document.createElement("div");
+    grow.className = "grow";
+    const nm = document.createElement("div");
+    nm.className = "name"; nm.textContent = r.name;
+    grow.appendChild(nm);
+    const val = document.createElement("div");
+    val.className = "sub";
+    const bad = r.residual_arcmin > 3 * med && r.residual_arcmin > 2;
+    val.innerHTML = bad
+      ? `<b style="color:var(--warn)">${r.residual_arcmin.toFixed(1)}′ ⚠ recenter me?</b>`
+      : `${r.residual_arcmin.toFixed(1)}′`;
+    row.appendChild(grow); row.appendChild(val);
+    box.appendChild(row);
+  }
+}
+
 function init(){
   initNightMode();
   initPad();
   initBacklash();
   initCordwrap();
+  initLimits();
+  initSites();
+  initAdaptive();
+  initKeys();
+  refreshSites();
+  refreshFirstlight();
   $("rate").oninput = () => {
     $("rate-label").textContent = `${slewRate()} · ${RATE_WORDS[slewRate()]}`;
   };
@@ -614,6 +999,11 @@ function init(){
     searchTimer = setTimeout(runSearch, 300);
   });
   $("btn-tonight").onclick = refreshTonight;
+  $("btn-fl-recheck").onclick = refreshFirstlight;
+  $("btn-spiral").onclick = startSpiral;
+  $("btn-spiral-stop").onclick = () => { spiralRunning = false; };
+  $("btn-tour").onclick = startTour;
+  $("btn-tour-stop").onclick = () => { tourRunning = false; };
   $("btn-identify").onclick = async () => {
     try{
       const d = await api("/api/identify");
@@ -690,6 +1080,7 @@ function init(){
   };
   refreshState(); refreshPointing(); refreshTonight(); refreshUserObjects(); refreshHC();
   setInterval(refreshState, 2000);
+  setInterval(refreshFirstlight, 15000);
   log("ScopePilot dashboard ready");
 }
 init();

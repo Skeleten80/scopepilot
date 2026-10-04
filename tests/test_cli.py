@@ -132,3 +132,33 @@ def test_backlash_bad_value():
 def test_cordwrap_read():
     assert main(SIM + ["cordwrap"]) == 0
     assert main(SIM + ["cordwrap", "on"]) == 0
+
+
+def test_limits_cli(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["limits"]) == 0
+    assert main(SIM + ["limits", "--min-alt", "20", "--max-alt", "85"]) == 0
+    assert main(SIM + ["limits", "--min-alt", "90", "--max-alt", "20"]) == 2
+    assert main(SIM + ["limits", "--clear"]) == 0
+
+
+def test_goto_at_bad_time():
+    assert main(SIM + ["goto", "M51", "--at", "99:99"]) == 2
+
+
+def test_site_cli(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["site", "list"]) == 0
+    assert main(SIM + ["site", "save", "dark", "--lat", "44.0",
+                       "--lon", "-81.0", "--min-alt", "15"]) == 0
+    assert main(SIM + ["site", "save", "bad", "--lat", "100",
+                       "--lon", "0"]) == 2
+    assert main(SIM + ["site", "use", "dark"]) == 0
+    assert main(SIM + ["site", "use", "nope"]) == 2
+    assert main(SIM + ["site", "delete", "dark"]) == 0
+    assert main(SIM + ["site", "delete", "dark"]) == 2
+
+
+def test_log_cli_no_log(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["log"]) == 1

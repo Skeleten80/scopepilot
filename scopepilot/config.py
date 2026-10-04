@@ -25,6 +25,11 @@ class ScopeConfig:
     jog_rate: int = 5
     server_port: int = 8765
     sim_slew_rate_dps: float = 360.0
+    # Safety: refuse gotos outside these altitudes (None = no limit).
+    min_alt_deg: float | None = None   # e.g. roofline / trees
+    max_alt_deg: float | None = None   # e.g. keep the tube off the fork
+    # Depth 1: each converged plate solve refines the pointing model.
+    adaptive_pointing: bool = True
     # Closed-loop centering (Depth 1): capture driver + plate solver.
     camera_driver: str = "sim"   # sim | indi | dslr (astrocapture drivers)
     center_exposure_s: float = 5.0
