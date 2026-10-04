@@ -163,7 +163,8 @@ language — no menus to memorize:
   record, then build the pointing model. No HC alignment ever.
 - **Telescope** — tracking modes, Park/Unpark, **Undo GoTo**, HC info
   (model, firmware, clock, GPS, AUX bus), one-click HC clock + site sync,
-  anti-backlash sliders (HC Utilities menu), cord-wrap toggle.
+  anti-backlash sliders (HC Utilities menu — stored in the mount, so a
+  one-time set over direct serial persists for INDI sessions), cord-wrap toggle.
 
 A 🌙 Night button switches the whole page to deep-red light so it won't
 ruin your dark adaptation at the scope.
@@ -211,6 +212,8 @@ if (check_manual_override("http://127.0.0.1:8765") or {}).get("claimed"):
 | `park` / `unpark` | slew to home + tracking off / resume |
 | `set-time` / `set-location --lat --lon` | HC clock / site from this computer |
 | `bus-scan` | enumerate AUX-bus devices |
+| `backlash --axis az --dir + [--value N]` | get/set anti-backlash 0-99 (stored in the mount) |
+| `cordwrap [on\|off]` | get/set cord wrap |
 | `targets [query]` | catalog search |
 | `queue --plan night.yaml [--dwell N]` | slew the AstroCapture night plan |
 | `align [--star NAME] [--fit] [--status] [--clear] [--reuse]` | software pointing model, no HC menus |

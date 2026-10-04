@@ -91,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("--lon", type=float, required=True)
 
     sub.add_parser("bus-scan", help="enumerate AUX bus devices")
+    bl = sub.add_parser("backlash",
+                        help="get/set anti-backlash (stored in the mount)")
+    bl.add_argument("--axis", choices=["az", "alt"], required=True)
+    bl.add_argument("--dir", choices=["+", "-"], required=True,
+                    help="motor direction")
+    bl.add_argument("--value", type=int, default=None,
+                    help="0-99 to set; omit to read the current value")
+    cw = sub.add_parser("cordwrap", help="get/set cord wrap")
+    cw.add_argument("state", nargs="?", choices=["on", "off"],
+                    help="omit to read the current state")
     sub.add_parser("targets", help="list / search known targets").add_argument(
         "query", nargs="?", default="")
 
@@ -363,6 +373,40 @@ def cmd_bus_scan(args, cfg) -> int:
     return 0
 
 
+def cmd_backlash(args, cfg) -> int:
+    """Get/set anti-backlash. The value is stored in the motor controller,
+    so a one-time set over direct serial persists for INDI sessions too."""
+    direction = 1 if args.dir == "+" else -1
+    with _controller(args, cfg) as scope:
+        try:
+            if args.value is None:
+                value = scope.get_backlash(args.axis, direction)
+                print(f"{args.axis} {args.dir}: {value}")
+            else:
+                scope.set_backlash(args.axis, direction, args.value)
+                print(f"{args.axis} {args.dir} -> {args.value} "
+                      f"(stored in the mount)")
+        except (ValueError, NotImplementedError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+    return 0
+
+
+def cmd_cordwrap(args, cfg) -> int:
+    with _controller(args, cfg) as scope:
+        try:
+            if args.state is None:
+                on = scope.cordwrap_enabled()
+                print(f"cordwrap: {'on' if on else 'off'}")
+            else:
+                scope.set_cordwrap(args.state == "on")
+                print(f"cordwrap {args.state}")
+        except NotImplementedError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+    return 0
+
+
 def cmd_targets(args, cfg) -> int:
     for r in bridge.search_targets(args.query, limit=30):
         print(f"{r['name']:10s} RA {_fmt_ra(r['ra_hours'])} "
@@ -574,6 +618,8 @@ _COMMANDS = {
     "set-time": cmd_set_time,
     "set-location": cmd_set_location,
     "bus-scan": cmd_bus_scan,
+    "backlash": cmd_backlash,
+    "cordwrap": cmd_cordwrap,
     "targets": cmd_targets,
     "dash": cmd_dash,
     "server": cmd_server,

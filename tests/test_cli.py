@@ -118,3 +118,17 @@ def test_align_reuse_and_clear(monkeypatch, tmp_path):
 def test_center_without_astrocapture_is_clean_error():
     # astrocapture is not importable here -> clear error, exit 2
     assert main(SIM + ["center", "M51"]) == 2
+
+
+def test_backlash_read():
+    assert main(SIM + ["backlash", "--axis", "az", "--dir", "+"]) == 0
+
+
+def test_backlash_bad_value():
+    assert main(SIM + ["backlash", "--axis", "az", "--dir", "+",
+                       "--value", "150"]) == 2
+
+
+def test_cordwrap_read():
+    assert main(SIM + ["cordwrap"]) == 0
+    assert main(SIM + ["cordwrap", "on"]) == 0
