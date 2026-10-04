@@ -286,6 +286,29 @@ server and CLI are all tested end-to-end with no telescope attached.
 - **GOTO accuracy** is whatever the HC's alignment + sync model gives you;
   use `sync` on a nearby bright star to tighten pointing, exactly as you
   would from the hand controller.
+- **Anti-backlash and cord wrap are calibrations, not session controls.**
+  The values live in the motor controllers' non-volatile memory (that's
+  why the hand controller puts them in a Utilities *setup* menu), so set
+  them once and they stay set for every session after — including INDI
+  sessions. The `--backend indi` path can't reach the AUX bus, so it
+  can't change these live; in practice you never need to. One-time setup
+  over direct serial (stop indiserver first so ScopePilot owns the port):
+
+  ```bash
+  scopepilot --backend serial backlash --axis az --dir + --value 30
+  scopepilot --backend serial backlash --axis az --dir - --value 30
+  scopepilot --backend serial backlash --axis alt --dir + --value 30
+  scopepilot --backend serial backlash --axis alt --dir - --value 30
+  scopepilot --backend serial cordwrap on
+  ```
+
+  Dialing it in: center a star at high power, nudge one axis back and
+  forth, and raise that axis/direction's value until reversals feel crisp
+  with no jumpiness. Start conservative (20–30) — too much compensation
+  makes the mount jump on reversal, which is worse than a little lag.
+  (Persistence across power cycles is standard NexStar motor-controller
+  behavior but not yet verified on real hardware — read the values back
+  after a power cycle during the first shakedown to confirm.)
 - Slew-rate table (rates 1–9 → °/s) is approximate; Celestron publishes
   only the ~4°/s maximum for the SE series.
 - Time/location commands talk to the **HC**, not a GPS module. The 6SE
