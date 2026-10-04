@@ -122,9 +122,23 @@
     </div>
   </section>
 
+  <section class="card">
+    <h2>Pointing model <span style="font-weight:normal;text-transform:none;letter-spacing:0">(no HC menus)</span></h2>
+    <div id="pointingStatus" style="font-size:13px;color:var(--dim);margin-bottom:8px">…</div>
+    <div style="font-size:12px;color:var(--dim);margin-bottom:8px">Center a star in the eyepiece, type its name above, then Sync star. Fit after 2+ stars.</div>
+    <div class="row">
+      <button id="syncStarBtn">Sync star here</button>
+      <button id="fitBtn">Fit model</button>
+      <button id="clearModelBtn">Clear</button>
+    </div>
+    <div class="row">
+      <button id="centerBtn" class="primary" style="flex:1">Center on target (plate-solve loop)</button>
+    </div>
+    <div id="centerStatus" style="font-size:13px;color:var(--dim);margin-top:6px"></div>
+  </section>
+
   <section class="card" id="queueCard">
-    <h2>AstroCapture night queue</h2>
-    <div id="queue"><div style="color:var(--dim);font-size:13px">
+    <h2>AstroCapture night queue</h2>    <div id="queue"><div style="color:var(--dim);font-size:13px">
       Add <code>?plan=/path/to/night_queue.yaml</code> to the URL to load it.</div></div>
   </section>
 
@@ -270,6 +284,49 @@ $('releaseBtn').onclick = () => api('/api/release', {}).then(() => log('claim re
     });
   } catch (e) { $('queue').innerHTML = '<div style="color:var(--bad)">could not load plan</div>'; }
 })();
+// pointing model
+async function refreshPointing() {
+  try {
+    const j = await (await fetch('/api/pointing')).json();
+    const p = j.pointing || {};
+    $('pointingStatus').textContent = p.active
+      ? `active: ${p.stars} star(s), RMS ${p.rms_arcmin.toFixed(2)}′, Δaz ${p.az_offset_deg.toFixed(3)}° Δalt ${p.alt_offset_deg.toFixed(3)}°`
+      : `no model (${p.stars || 0} star(s) recorded)`;
+  } catch (e) { /* ignore */ }
+}
+setInterval(refreshPointing, 2000); refreshPointing();
+$('syncStarBtn').onclick = async () => {
+  const name = $('target').value.trim(); if (!name) { log('type a star name first'); return; }
+  try { const j = await api('/api/sync-star', {name}); log(`sync star ${name} recorded (${j.pending} total)`); refreshPointing(); }
+  catch (e) { log('ERR ' + e.message); }
+};
+$('fitBtn').onclick = async () => {
+  try { const j = await api('/api/align-fit', {}); const p = j.pointing; log(`model fit: ${p.stars} stars, RMS ${p.rms_arcmin.toFixed(2)}′`); refreshPointing(); }
+  catch (e) { log('ERR ' + e.message); }
+};
+$('clearModelBtn').onclick = () => api('/api/align-clear', {}).then(() => { log('pointing model cleared'); refreshPointing(); }).catch(e => log('ERR ' + e.message));
+let centerSeen = 0;
+$('centerBtn').onclick = async () => {
+  const name = $('target').value.trim(); if (!name) { log('type a target name first'); return; }
+  try { await api('/api/center', {name}); centerSeen = 0; $('centerStatus').textContent = 'centering…'; log('closed-loop centering started for ' + name); }
+  catch (e) { log('ERR ' + e.message); }
+};
+setInterval(async () => {
+  try {
+    const j = await (await fetch('/api/center-status')).json();
+    if (!j.running && !j.report && centerSeen === 0) return;
+    (j.events || []).slice(centerSeen).forEach(e => log(e));
+    centerSeen = (j.events || []).length;
+    if (!j.running && j.report) {
+      $('centerStatus').textContent = j.report.converged
+        ? `centered: ${j.report.final_sep_arcmin.toFixed(2)}′ in ${j.report.iters} iter(s)`
+        : 'centering did not converge — see log';
+    } else if (j.running) {
+      $('centerStatus').textContent = 'centering…';
+    }
+  } catch (e) { /* ignore */ }
+}, 2000);
+
 log('console ready');
 </script>
 </body>

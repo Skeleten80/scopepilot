@@ -25,6 +25,11 @@ class ScopeConfig:
     jog_rate: int = 5
     server_port: int = 8765
     sim_slew_rate_dps: float = 360.0
+    # Closed-loop centering (Depth 1): capture driver + plate solver.
+    camera_driver: str = "sim"   # sim | indi | dslr (astrocapture drivers)
+    center_exposure_s: float = 5.0
+    center_tolerance_arcmin: float = 1.0
+    center_max_iters: int = 4
 
 
 def default_config_path() -> Path:

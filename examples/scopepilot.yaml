@@ -36,3 +36,10 @@ server_port: 8765
 
 # Simulator slew speed, deg/s. 360 is snappy; ~4 matches the real 6SE.
 sim_slew_rate_dps: 360.0
+
+# Closed-loop centering: camera driver (astrocapture drivers: sim | indi | dslr)
+# and plate-solve loop tuning.
+camera_driver: sim
+center_exposure_s: 5.0
+center_tolerance_arcmin: 1.0
+center_max_iters: 4

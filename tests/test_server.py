@@ -13,7 +13,8 @@ from scopepilot.server import create_server
 
 @pytest.fixture()
 def api():
-    ctl = TelescopeController(SimBackend(slew_rate_dps=720.0))
+    ctl = TelescopeController(SimBackend(slew_rate_dps=720.0),
+                              site_lat=43.3767, site_lon=-80.9809)
     ctl.connect()
     server = create_server(ctl, port=0)
     port = server.server_address[1]
@@ -147,3 +148,48 @@ def test_dash_page(api):
 def test_unknown_route(api):
     code, body = _get(api, "/nope")
     assert code == 404
+
+
+def test_pointing_endpoints(api):
+    code, body = _get(api, "/api/pointing")
+    assert code == 200
+    assert json.loads(body)["pointing"]["active"] is False
+
+    _code, j = _post(api, "/api/sync-star", {"name": "Vega"})
+    assert j["ok"] is True and j["pending"] == 1
+    _code, j = _post(api, "/api/sync-star", {"name": "Altair"})
+    assert j["pending"] == 2
+
+    _code, j = _post(api, "/api/align-fit", {})
+    assert j["ok"] is True
+    assert j["pointing"]["active"] is True
+    assert j["pointing"]["stars"] == 2
+
+    _code, j = _post(api, "/api/align-clear", {})
+    assert j["ok"] is True
+    _code, body = _get(api, "/api/pointing")
+    assert json.loads(body)["pointing"]["active"] is False
+
+
+def test_sync_star_unknown(api):
+    code, j = _post(api, "/api/sync-star", {"name": "NoSuchStarXYZ"})
+    assert code == 400
+    assert j["ok"] is False
+
+
+def test_center_without_rig_reports_error(api):
+    _code, j = _post(api, "/api/center", {"name": "M51"})
+    assert j["ok"] is True  # accepted; the worker reports the failure
+    import time
+
+    deadline = time.monotonic() + 10
+    while True:
+        _code, body = _get(api, "/api/center-status")
+        st = json.loads(body)
+        if not st["running"]:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert st["report"] is not None
+    assert st["report"]["converged"] is False
+    assert "error" in st["report"]

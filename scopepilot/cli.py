@@ -108,6 +108,28 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--dwell", type=float, default=0.0,
                    help="seconds to sit on each target after settle")
     q.add_argument("--timeout", type=float, default=300.0)
+
+    a = sub.add_parser("align",
+                       help="software pointing model: align without HC menus")
+    a.add_argument("--star", default=None,
+                   help="record one sync star (center it first)")
+    a.add_argument("--fit", action="store_true",
+                   help="fit the model from recorded stars and save it")
+    a.add_argument("--status", action="store_true", help="show model status")
+    a.add_argument("--clear", action="store_true", help="clear the model")
+    a.add_argument("--reuse", action="store_true",
+                   help="load the saved model (same power-on pose only)")
+    a.add_argument("--count", type=int, default=3,
+                   help="stars for the guided flow")
+
+    c = sub.add_parser("center",
+                       help="closed-loop plate-solve centering on a target")
+    c.add_argument("name", help="target name")
+    c.add_argument("--exposure", type=float, default=None)
+    c.add_argument("--tolerance", type=float, default=None,
+                   help="arcmin")
+    c.add_argument("--max-iters", type=int, default=None)
+    c.add_argument("--camera-driver", default=None)
     return p
 
 
@@ -115,13 +137,18 @@ def _controller(args: argparse.Namespace, cfg: ScopeConfig) -> TelescopeControll
     overrides = {k: v for k, v in vars(args).items()
                  if k in ("backend", "port", "slew_rate") and v is not None}
     backend = make_backend_from_config(cfg, **overrides)
-    return TelescopeController(
+    scope = TelescopeController(
         backend,
         site_lat=cfg.site_lat,
         site_lon=cfg.site_lon,
         home_az=cfg.home_az,
         home_alt=cfg.home_alt,
     )
+    # Pick up the saved pointing model automatically: every goto then
+    # routes through it with no HC alignment. Only valid if the power-on
+    # pose matches the alignment session (see `align --help`).
+    scope.load_pointing()
+    return scope
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +207,17 @@ def cmd_status(args, cfg) -> int:
     with _controller(args, cfg) as scope:
         def show():
             st = scope.status()
+            pm = scope.pointing_status()
+            model = (f" | model {pm['stars']}★ RMS {pm['rms_arcmin']:.1f}'"
+                     if pm["active"] else "")
             print(f"[{time.strftime('%H:%M:%S')}] "
                   f"RA {_fmt_ra(st.ra_hours)} Dec {_fmt_deg(st.dec_deg)} | "
                   f"Az {_fmt_deg(st.az_deg)} Alt {_fmt_deg(st.alt_deg)} | "
                   f"{st.tracking_mode}"
                   f"{' SLEWING' if st.slewing else ''}"
                   f"{' PARKED' if st.parked else ''}"
-                  f"{'' if st.aligned else ' NOT-ALIGNED'}")
+                  f"{'' if st.aligned else ' NOT-ALIGNED'}"
+                  f"{model}")
         show()
         if args.watch:
             try:
@@ -341,9 +372,15 @@ def cmd_targets(args, cfg) -> int:
 
 def cmd_dash(args, cfg) -> int:
     from scopepilot.server import serve
+
+    def make_rig():
+        from scopepilot.center import AstroCaptureRig
+        return AstroCaptureRig(camera_driver=cfg.camera_driver)
+
     with _controller(args, cfg) as scope:
         serve(scope, host=args.host,
-              port=args.http_port or cfg.server_port)
+              port=args.http_port or cfg.server_port,
+              make_rig=make_rig)
     return 0
 
 
@@ -388,6 +425,142 @@ def cmd_queue(args, cfg) -> int:
     return 0
 
 
+def _fit_and_save(scope) -> int:
+    try:
+        model = scope.fit_pointing()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    path = scope.save_pointing()
+    print(f"model: {len(model.stars)} star(s), "
+          f"az_offset {model.az_offset:+.3f}°, "
+          f"alt_offset {model.alt_offset:+.3f}°, "
+          f"RMS {model.rms_arcmin:.2f}'  ->  {path}")
+    if model.rms_arcmin > 15:
+        print("WARNING: large RMS -- recenter the stars carefully "
+              "or add more of them", file=sys.stderr)
+    return 0
+
+
+def _interactive_align(args, cfg, scope) -> int:
+    from scopepilot.pointing import suggest_alignment_stars
+
+    stars = suggest_alignment_stars(cfg.site_lat, cfg.site_lon,
+                                    count=args.count)
+    if not stars:
+        print("no suitable alignment stars above the horizon right now",
+              file=sys.stderr)
+        return 1
+    print("Guided alignment: center each star in the eyepiece, then press "
+          "Enter.\n"
+          "Tip: always power the mount on with the OTA level and pointing\n"
+          "north -- then the saved model stays valid between sessions.\n")
+    try:
+        for i, (name, az, alt) in enumerate(stars, 1):
+            print(f"[{i}/{len(stars)}] {name}: true az {az:.1f}°, "
+                  f"alt {alt:.1f}°")
+            if scope.pointing is not None and scope._sync_stars:
+                rep_az, rep_alt = scope.pointing.to_reported(az, alt)
+                print(f"  slewing close "
+                      f"(reported az {rep_az:.1f}° alt {rep_alt:.1f}°)…")
+                scope.goto_altaz(rep_az, rep_alt)
+            input("  center it with the jog pad, then press Enter… ")
+            star = scope.record_sync_star(name)
+            print(f"  recorded (reported az {star.reported_az:.2f}° "
+                  f"alt {star.reported_alt:.2f}°)")
+            if len(scope._sync_stars) >= 2:
+                model = scope.fit_pointing()
+                print(f"  model RMS now {model.rms_arcmin:.2f}' "
+                      f"({len(model.stars)} stars)")
+    except KeyboardInterrupt:
+        print("\nalignment interrupted")
+    if scope._sync_stars:
+        return _fit_and_save(scope)
+    print("no stars recorded", file=sys.stderr)
+    return 1
+
+
+def cmd_align(args, cfg) -> int:
+    with _controller(args, cfg) as scope:
+        if args.clear:
+            scope.clear_pointing()
+            print("pointing model cleared (memory, pending stars, saved file)")
+            return 0
+        if args.reuse:
+            model = scope.load_pointing()
+            if model is None:
+                print("no saved pointing model found", file=sys.stderr)
+                return 1
+            print(f"loaded model: {len(model.stars)} star(s), "
+                  f"RMS {model.rms_arcmin:.2f}' "
+                  f"(only valid if the power-on pose matches)")
+            return 0
+        if args.status:
+            st = scope.pointing_status()
+            if not st["active"]:
+                print(f"no active model ({st['stars']} star(s) recorded)")
+                return 0
+            print(f"model: {st['stars']} star(s), "
+                  f"az_offset {st['az_offset_deg']:+.3f}°, "
+                  f"alt_offset {st['alt_offset_deg']:+.3f}°, "
+                  f"RMS {st['rms_arcmin']:.2f}'")
+            return 0
+        if args.star:
+            try:
+                star = scope.record_sync_star(args.star)
+            except bridge.TargetNotFound as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 2
+            print(f"recorded {star.name}: true az {star.true_az:.2f}° "
+                  f"alt {star.true_alt:.2f}° | reported az "
+                  f"{star.reported_az:.2f}° alt {star.reported_alt:.2f}°")
+            if len(scope._sync_stars) >= 2 or args.fit:
+                return _fit_and_save(scope)
+            print(f"({len(scope._sync_stars)} star(s) recorded; "
+                  f"add more, then `scopepilot align --fit`)")
+            return 0
+        if args.fit:
+            return _fit_and_save(scope)
+        return _interactive_align(args, cfg, scope)
+
+
+def cmd_center(args, cfg) -> int:
+    from scopepilot.center import AstroCaptureRig
+
+    exposure = args.exposure or cfg.center_exposure_s
+    tolerance = args.tolerance or cfg.center_tolerance_arcmin
+    max_iters = args.max_iters or cfg.center_max_iters
+    with _controller(args, cfg) as scope:
+        try:
+            rig = AstroCaptureRig(
+                camera_driver=args.camera_driver or cfg.camera_driver)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        try:
+            hint = None
+            try:
+                ra, dec, _src = scope._resolve_with_stars(args.name)
+                hint = (ra, dec)
+            except bridge.TargetNotFound:
+                pass
+            rig.hint_radec = hint
+            rig.connect()
+            try:
+                report = scope.center_target(
+                    args.name, rig,
+                    tolerance_arcmin=tolerance, max_iters=max_iters,
+                    exposure_s=exposure)
+            finally:
+                rig.disconnect()
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+    for event in report["events"]:
+        print(event)
+    return 0 if report["converged"] else 1
+
+
 _COMMANDS = {
     "probe": cmd_probe,
     "status": cmd_status,
@@ -405,6 +578,8 @@ _COMMANDS = {
     "dash": cmd_dash,
     "server": cmd_server,
     "queue": cmd_queue,
+    "align": cmd_align,
+    "center": cmd_center,
 }
 
 

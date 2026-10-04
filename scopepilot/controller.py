@@ -6,12 +6,25 @@ park-as-a-sequence, clock/site setup); backends own the wire.
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 from scopepilot import nexstar
+from scopepilot.astro import radec_to_altaz, utcnow
 from scopepilot.backends import Backend, MountStatus
-from scopepilot.bridge import resolve_target
+from scopepilot.bridge import TargetNotFound, resolve_target
 from scopepilot.nexstar import NexStarError
+from scopepilot.pointing import (
+    ALIGN_STARS,
+    PointingModel,
+    SyncStar,
+    default_pointing_path,
+)
+
+
+def default_pending_path() -> Path:
+    return Path.home() / ".scopepilot" / "sync_stars.json"
 
 
 class AlignmentError(NexStarError):
@@ -39,6 +52,7 @@ class TelescopeController:
         site_lon: float | None = None,
         home_az: float = 0.0,
         home_alt: float = 5.0,
+        pending_path=None,
     ) -> None:
         self.backend = backend
         self.site_lat = site_lat
@@ -47,6 +61,13 @@ class TelescopeController:
         self.home_alt = home_alt
         self.parked = False
         self._connected = False
+        # Software pointing model (Depth 1 HC replacement): when active,
+        # goto_radec converts to alt-az through the model and needs no
+        # hand-controller alignment at all.
+        self.pointing: PointingModel | None = None
+        self._pending_path = (Path(pending_path) if pending_path
+                              else default_pending_path())
+        self._sync_stars: list[SyncStar] = self._read_pending()
 
     # -- lifecycle -------------------------------------------------------
     def connect(self) -> "TelescopeController":
@@ -116,8 +137,22 @@ class TelescopeController:
         timeout: float = 300.0,
         settle: float = 2.0,
     ) -> bool:
-        """Slew to RA/Dec. Returns True when settled within *timeout*."""
+        """Slew to RA/Dec. Returns True when settled within *timeout*.
+
+        With a pointing model loaded, the target is converted to alt-az
+        through the model and sent as GOTO AZM-ALT -- no hand-controller
+        alignment required. Without a model it falls back to the HC's
+        GOTO RA/DEC (which does require alignment).
+        """
         self._require_connected()
+        if self.pointing is not None:
+            if self.site_lat is None or self.site_lon is None:
+                raise NexStarError("pointing model needs site_lat/site_lon")
+            az, alt = radec_to_altaz(
+                ra_hours, dec_deg, self.site_lat, self.site_lon, utcnow())
+            rep_az, rep_alt = self.pointing.to_reported(az, alt)
+            return self.goto_altaz(rep_az, rep_alt, wait=wait,
+                                   timeout=timeout, settle=settle)
         self.require_aligned()
         self.parked = False
         self.backend.goto_radec(ra_hours, dec_deg)
@@ -271,3 +306,123 @@ class TelescopeController:
         self._require_connected()
         self.backend.set_hc_location(lat_deg, lon_deg)
         self.site_lat, self.site_lon = lat_deg, lon_deg
+
+    # -- software pointing model (Depth 1: no HC menus) ----------------------
+    def _read_pending(self) -> list[SyncStar]:
+        try:
+            data = json.loads(self._pending_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        stars = []
+        for d in data:
+            try:
+                stars.append(SyncStar(**d))
+            except TypeError:
+                continue
+        return stars
+
+    def _write_pending(self) -> None:
+        self._pending_path.parent.mkdir(parents=True, exist_ok=True)
+        self._pending_path.write_text(
+            json.dumps([s.__dict__ for s in self._sync_stars], indent=2))
+    def _resolve_with_stars(self, name: str) -> tuple[float, float, str]:
+        try:
+            return resolve_target(name)
+        except TargetNotFound:
+            key = name.strip().upper()
+            for star_name, (ra, dec) in ALIGN_STARS.items():
+                if star_name.upper() == key:
+                    return ra, dec, "scopepilot-align-stars"
+            raise
+
+    def record_sync_star(self, name: str) -> SyncStar:
+        """Record the currently-centered object as a sync star.
+
+        Center *name* in the eyepiece (jog pad / dashboard), then call this.
+        The star's true alt-az (from site + time) is paired with the mount's
+        reported alt-az; :meth:`fit_pointing` turns the pairs into a model.
+        """
+        self._require_connected()
+        if self.site_lat is None or self.site_lon is None:
+            raise NexStarError("need site_lat/site_lon to record a sync star")
+        ra, dec, _src = self._resolve_with_stars(name)
+        now = utcnow()
+        az, alt = radec_to_altaz(ra, dec, self.site_lat, self.site_lon, now)
+        st = self.status()
+        if st.az_deg is None or st.alt_deg is None:
+            raise NexStarError(
+                "sync stars need the mount's alt-az readout "
+                "(serial/sim backend)")
+        star = SyncStar(name=name, true_az=az, true_alt=alt,
+                        reported_az=st.az_deg, reported_alt=st.alt_deg,
+                        at=now.timestamp())
+        self._sync_stars.append(star)
+        self._write_pending()
+        return star
+
+    def fit_pointing(self) -> PointingModel:
+        """Fit the pointing model from recorded sync stars and activate it."""
+        self._require_connected()
+        self.pointing = PointingModel.fit(
+            self._sync_stars, site_lat=self.site_lat, site_lon=self.site_lon)
+        # Stars are consumed into the model; drop the pending file.
+        self._sync_stars = []
+        try:
+            self._pending_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return self.pointing
+
+    def load_pointing(self, path=None) -> PointingModel | None:
+        """Load a saved model (same power-on pose required to stay valid)."""
+        self.pointing = PointingModel.load(path or default_pointing_path())
+        return self.pointing
+
+    def save_pointing(self, path=None):
+        if self.pointing is None:
+            raise NexStarError("no pointing model to save")
+        return self.pointing.save(path or default_pointing_path())
+
+    def clear_pointing(self, pointing_path=None) -> None:
+        self.pointing = None
+        self._sync_stars = []
+        for p in (self._pending_path,
+                  Path(pointing_path) if pointing_path
+                  else default_pointing_path()):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def pointing_status(self) -> dict:
+        if self.pointing is None:
+            return {"active": False, "stars": len(self._sync_stars)}
+        p = self.pointing
+        return {
+            "active": True,
+            "stars": len(p.stars),
+            "pending": len(self._sync_stars),
+            "az_offset_deg": p.az_offset,
+            "alt_offset_deg": p.alt_offset,
+            "rms_arcmin": p.rms_arcmin,
+            "created": p.created,
+        }
+
+    def center_target(
+        self,
+        name: str,
+        capture_and_solve,
+        *,
+        tolerance_arcmin: float = 1.0,
+        max_iters: int = 4,
+        exposure_s: float = 5.0,
+        on_event=None,
+    ) -> dict:
+        """Slew to *name*, then closed-loop plate-solve centering."""
+        from scopepilot.center import closed_loop_center
+
+        ra, dec, _src = self._resolve_with_stars(name)
+        return closed_loop_center(
+            self, ra, dec, capture_and_solve,
+            tolerance_arcmin=tolerance_arcmin, max_iters=max_iters,
+            exposure_s=exposure_s, on_event=on_event)

@@ -75,3 +75,46 @@ def test_queue_missing_plan():
 def test_set_time_and_location():
     assert main(SIM + ["set-time"]) == 0
     assert main(SIM + ["set-location", "--lat", "43.38", "--lon", "-80.98"]) == 0
+
+
+def _home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path
+
+
+def test_align_status_no_model(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["align", "--status"]) == 0
+
+
+def test_align_star_then_fit(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["align", "--star", "Vega"]) == 0
+    # second star in a separate process: pending file accumulates, auto-fit
+    assert main(SIM + ["align", "--star", "Altair"]) == 0
+    assert (tmp_path / ".scopepilot" / "pointing.json").exists()
+    assert main(SIM + ["align", "--status"]) == 0
+
+
+def test_align_unknown_star(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["align", "--star", "NoSuchStarXYZ"]) == 2
+
+
+def test_align_fit_without_stars(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["align", "--fit"]) == 2
+
+
+def test_align_reuse_and_clear(monkeypatch, tmp_path):
+    _home(monkeypatch, tmp_path)
+    assert main(SIM + ["align", "--star", "Vega"]) == 0
+    assert main(SIM + ["align", "--star", "Altair"]) == 0
+    assert main(SIM + ["align", "--reuse"]) == 0
+    assert main(SIM + ["align", "--clear"]) == 0
+    assert main(SIM + ["align", "--reuse"]) == 1
+
+
+def test_center_without_astrocapture_is_clean_error():
+    # astrocapture is not importable here -> clear error, exit 2
+    assert main(SIM + ["center", "M51"]) == 2

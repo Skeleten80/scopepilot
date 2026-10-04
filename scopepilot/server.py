@@ -41,10 +41,12 @@ _HTML_PATH = Path(__file__).with_name("dash.html")
 
 
 class _ScopeState:
-    def __init__(self, controller: TelescopeController) -> None:
+    def __init__(self, controller: TelescopeController, make_rig=None) -> None:
         self.controller = controller
+        self.make_rig = make_rig
         self._lock = threading.Lock()
         self._claim = {"claimed": False, "by": None, "at": None}
+        self._center = {"running": False, "events": [], "report": None}
 
     def claim_snapshot(self) -> dict:
         with self._lock:
@@ -57,6 +59,46 @@ class _ScopeState:
             else:
                 self._claim = {"claimed": False, "by": None, "at": None}
             return dict(self._claim)
+
+    # -- closed-loop centering runs in a worker thread -------------------
+    def center_snapshot(self) -> dict:
+        with self._lock:
+            return {"running": self._center["running"],
+                    "events": list(self._center["events"]),
+                    "report": self._center["report"]}
+
+    def center_start(self, name: str, **kwargs) -> bool:
+        """Start a centering run; False when one is already running."""
+        with self._lock:
+            if self._center["running"]:
+                return False
+            self._center = {"running": True, "events": [], "report": None}
+        thread = threading.Thread(target=self._center_run,
+                                  args=(name, kwargs), daemon=True)
+        thread.start()
+        return True
+
+    def _center_run(self, name: str, kwargs: dict) -> None:
+        events: list[str] = []
+        report: dict | None = None
+        try:
+            if self.make_rig is None:
+                raise RuntimeError("no camera rig configured on this server")
+            rig = self.make_rig()
+            rig.connect()
+            try:
+                report = self.controller.center_target(
+                    name, rig, on_event=events.append, **kwargs)
+            finally:
+                rig.disconnect()
+        except Exception as exc:  # report, don't kill the server
+            events.append(f"ERROR: {exc}")
+            report = {"converged": False, "iters": 0,
+                      "final_sep_arcmin": None, "events": events,
+                      "error": str(exc)}
+        with self._lock:
+            self._center = {"running": False, "events": events,
+                            "report": report}
 
 
 def _snapshot(state: _ScopeState) -> dict:
@@ -126,6 +168,13 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"ok": True,
                                      "targets": bridge.read_night_plan(path)})
+            elif parsed.path == "/api/center-status":
+                self._send_json({"ok": True,
+                                 **self.state.center_snapshot()})
+            elif parsed.path == "/api/pointing":
+                self._send_json({"ok": True,
+                                 "pointing":
+                                 self.state.controller.pointing_status()})
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except Exception as exc:  # never leak a traceback to the UI
@@ -193,6 +242,34 @@ class _Handler(BaseHTTPRequestHandler):
                     body.get("by") or "operator"))
             elif parsed.path == "/api/release":
                 self._ok(manual_override=self.state.set_claim(None))
+            elif parsed.path == "/api/sync-star":
+                star = ctl.record_sync_star(body.get("name", ""))
+                self._ok(star={"name": star.name,
+                               "true_az": star.true_az, "true_alt": star.true_alt,
+                               "reported_az": star.reported_az,
+                               "reported_alt": star.reported_alt},
+                         pending=len(ctl._sync_stars))
+            elif parsed.path == "/api/align-fit":
+                model = ctl.fit_pointing()
+                ctl.save_pointing()
+                self._ok(pointing=ctl.pointing_status())
+            elif parsed.path == "/api/align-clear":
+                ctl.clear_pointing()
+                self._ok()
+            elif parsed.path == "/api/center":
+                name = body.get("name", "")
+                if not name:
+                    self._fail(ValueError("need {name}"), 400)
+                elif not self.state.center_start(
+                        name,
+                        exposure_s=float(body.get("exposure_s", 5.0)),
+                        tolerance_arcmin=float(
+                            body.get("tolerance_arcmin", 1.0)),
+                        max_iters=int(body.get("max_iters", 4))):
+                    self._fail(RuntimeError("a centering run is already "
+                                            "in progress"), 409)
+                else:
+                    self._ok(started=name)
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except AlignmentError as exc:
@@ -207,9 +284,15 @@ def create_server(
     controller: TelescopeController,
     host: str = "127.0.0.1",
     port: int = 8765,
+    make_rig=None,
 ) -> ThreadingHTTPServer:
-    """Build (not yet serving) the console server."""
-    handler = type("_BoundHandler", (_Handler,), {"state": _ScopeState(controller)})
+    """Build (not yet serving) the console server.
+
+    *make_rig* is an optional zero-arg factory returning a
+    ``capture_and_solve`` callable for ``POST /api/center``.
+    """
+    handler = type("_BoundHandler", (_Handler,),
+                   {"state": _ScopeState(controller, make_rig)})
     server = ThreadingHTTPServer((host, port), handler)
     return server
 
@@ -218,9 +301,10 @@ def serve(
     controller: TelescopeController,
     host: str = "127.0.0.1",
     port: int = 8765,
+    make_rig=None,
 ) -> None:
     """Serve the console until Ctrl-C."""
-    server = create_server(controller, host, port)
+    server = create_server(controller, host, port, make_rig)
     addr = server.server_address
     print(f"ScopePilot console on http://{addr[0]}:{addr[1]}  (Ctrl-C to stop)")
     try:
