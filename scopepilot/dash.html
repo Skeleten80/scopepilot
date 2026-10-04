@@ -55,10 +55,19 @@ button.ghost{background:transparent}
 input[type=text]{font-size:1.05rem;padding:.65rem .9rem;border-radius:12px;
   border:1px solid var(--line);background:var(--card2);color:var(--text);width:100%}
 input[type=range]{width:100%;accent-color:var(--accent);height:40px}
-.pad{display:grid;grid-template-columns:repeat(3,84px);grid-template-rows:repeat(3,84px);
-  gap:.5rem;justify-content:center;margin:.4rem 0 1rem}
-.pad button{font-size:1.9rem;padding:0;min-height:0;border-radius:16px}
-.pad .stop{font-size:1.1rem;font-weight:700;color:var(--danger)}
+.joy{position:relative;width:232px;height:232px;margin:.4rem auto 1rem;border-radius:50%;
+  background:radial-gradient(circle at 50% 42%, var(--card2) 0%, var(--card) 72%);
+  border:1px solid var(--line);touch-action:none;cursor:grab;
+  user-select:none;-webkit-user-select:none}
+.joy::before{content:"";position:absolute;inset:22px;border-radius:50%;
+  border:1px dashed var(--line);pointer-events:none}
+.joy.active{cursor:grabbing;border-color:var(--accent)}
+.joy-knob{position:absolute;left:50%;top:50%;width:78px;height:78px;border-radius:50%;
+  background:var(--accent);transform:translate(-50%,-50%);
+  box-shadow:0 4px 16px rgba(0,0,0,.45);pointer-events:none;
+  display:flex;align-items:center;justify-content:center;
+  color:#06121f;font-weight:700;font-size:1.5rem}
+body.night .joy-knob{color:#1a0505}
 .ratewords{display:flex;justify-content:space-between;color:var(--dim);font-size:.9rem}
 .list{display:flex;flex-direction:column;gap:.45rem;margin-top:.5rem}
 .item{display:flex;align-items:center;gap:.7rem;background:var(--card2);
@@ -134,12 +143,12 @@ body.night #log{background:#0d0202}
 
   <section class="card">
     <h2>Move the telescope</h2>
-    <div class="pad" id="pad">
-      <span></span><button data-dir="up" title="Up">▲</button><span></span>
-      <button data-dir="left" title="Left">◀</button>
-      <button class="stop" id="pad-stop" title="Stop">■</button>
-      <button data-dir="right" title="Right">▶</button>
-      <span></span><button data-dir="down" title="Down">▼</button><span></span>
+    <div class="joy" id="joy" title="Drag to slew the telescope">
+      <div class="joy-knob" id="joy-knob">✥</div>
+    </div>
+    <div class="hint" style="text-align:center;margin:-.3rem 0 .8rem">Drag the knob — direction steers, distance sets speed. Release to stop.</div>
+    <div class="row" style="justify-content:center">
+      <button id="joy-stop" class="danger">⏹ Stop</button>
     </div>
     <label for="rate">Slew speed: <b id="rate-label">5 · medium</b></label>
     <input type="range" id="rate" min="1" max="9" value="5" step="1">
@@ -293,18 +302,31 @@ function slewRate(){ return parseInt($("rate").value, 10); }
 
 function fmtRA(h){
   h = ((h % 24) + 24) % 24;
-  const H = Math.floor(h), m = Math.floor((h - H) * 60);
-  const s = Math.round((((h - H) * 60) - m) * 60);
+  let total = Math.round(h * 3600);
+  if(total >= 24 * 3600) total -= 24 * 3600;  /* 23:59:59.6 rounds up */
+  const H = Math.floor(total / 3600),
+        m = Math.floor((total % 3600) / 60),
+        s = total % 60;
   const p = (n) => String(n).padStart(2, "0");
   return `${p(H)}:${p(m)}:${p(s)}`;
 }
 function fmtDec(d){
   const sign = d < 0 ? "-" : "+";
-  d = Math.abs(d);
-  const D = Math.floor(d), m = Math.floor((d - D) * 60);
-  const s = Math.round((((d - D) * 60) - m) * 60);
+  const total = Math.round(Math.abs(d) * 3600);
+  const D = Math.floor(total / 3600),
+        m = Math.floor((total % 3600) / 60),
+        s = total % 60;
   const p = (n) => String(n).padStart(2, "0");
   return `${sign}${p(D)}°${p(m)}′${p(s)}″`;
+}
+function fmtHcTime(t){
+  if(!t) return "—";
+  if(typeof t === "string") return t;
+  if(typeof t === "object" && t.year){
+    const p = (n) => String(n).padStart(2, "0");
+    return `${t.year}-${p(t.month)}-${p(t.day)} ${p(t.hour)}:${p(t.minute)}:${p(t.second || 0)}`;
+  }
+  return "—";
 }
 
 async function refreshState(){
@@ -518,7 +540,7 @@ async function refreshHC(){
     const rows = [
       ["Mount", h.model || "—"],
       ["HC firmware", h.hc_version || "—"],
-      ["HC clock", h.hc_time || "—"],
+      ["HC clock", fmtHcTime(h.hc_time)],
       ["Tracking", h.tracking || "—"],
       ["GPS", h.gps_linked == null ? "—" : (h.gps_linked ? "linked" : "no module")],
       ["Bus", h.bus ? Object.entries(h.bus).map(([k, v]) => `${k}:${v}`).join(" ") : "—"],
@@ -622,25 +644,65 @@ async function loadAlignStars(){
 }
 
 function initPad(){
-  document.querySelectorAll("#pad button[data-dir]").forEach((b) => {
-    const dir = b.dataset.dir;
-    const start = async (e) => {
-      e.preventDefault();
-      try{ await api("/api/jog", {method: "POST",
-        body: {direction: dir, rate: slewRate()}}); }
-      catch(err){ log("Jog failed: " + err.message); }
-    };
-    const stop = async () => {
-      try{ await api("/api/jog_stop", {method: "POST", body: {}}); }
-      catch(err){ /* already stopped */ }
-    };
-    b.addEventListener("pointerdown", start);
-    b.addEventListener("pointerup", stop);
-    b.addEventListener("pointercancel", stop);
-    b.addEventListener("pointerleave", stop);
+  /* Virtual joystick: drag anywhere in the circle. Direction steers both
+     axes at once (diagonals included); deflection sets per-axis speed
+     1..slewRate(). Release springs back and stops. */
+  const joy = $("joy"), knob = $("joy-knob");
+  const DEAD = 0.10;  /* inside this radius: that axis stops */
+  let active = false, lastSent = "";
+  const travel = () => joy.clientWidth / 2 - 39;  /* knob centre travel */
+
+  const setKnob = (dx, dy) => {
+    knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  };
+  const stopAll = async () => {
+    try{ await api("/api/jog_stop", {method: "POST", body: {}}); }
+    catch(err){ /* already stopped */ }
+  };
+  const drive = async (nx, ny) => {
+    const max = slewRate();
+    const azRate = Math.abs(nx) < DEAD ? 0 : Math.max(1, Math.round(Math.abs(nx) * max));
+    const altRate = Math.abs(ny) < DEAD ? 0 : Math.max(1, Math.round(Math.abs(ny) * max));
+    const key = (nx < -DEAD ? "-" : nx > DEAD ? "+" : "0") + azRate + "|" +
+                (ny < -DEAD ? "-" : ny > DEAD ? "+" : "0") + altRate;
+    if(key === lastSent) return;
+    lastSent = key;
+    try{
+      if(azRate) await api("/api/jog", {method: "POST",
+        body: {direction: nx > 0 ? "right" : "left", rate: azRate}});
+      else await api("/api/jog_stop", {method: "POST", body: {axis: "az"}});
+      if(altRate) await api("/api/jog", {method: "POST",
+        body: {direction: ny > 0 ? "down" : "up", rate: altRate}});
+      else await api("/api/jog_stop", {method: "POST", body: {axis: "alt"}});
+    }catch(err){ log("Jog failed: " + err.message); }
+  };
+  const move = (e) => {
+    const r = joy.getBoundingClientRect(), t = travel();
+    let dx = e.clientX - (r.left + r.width / 2);
+    let dy = e.clientY - (r.top + r.height / 2);
+    const len = Math.hypot(dx, dy);
+    if(len > t){ dx = dx / len * t; dy = dy / len * t; }
+    setKnob(dx, dy);
+    drive(dx / t, dy / t);
+  };
+  const end = () => {
+    if(!active) return;
+    active = false; lastSent = "";
+    joy.classList.remove("active");
+    setKnob(0, 0);
+    stopAll();
+  };
+  joy.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    active = true;
+    joy.classList.add("active");
+    try{ joy.setPointerCapture(e.pointerId); }catch(err){ /* mouse */ }
+    move(e);
   });
-  $("pad-stop").onclick = () => api("/api/jog_stop", {method: "POST", body: {}})
-    .catch((e) => log("Stop failed: " + e.message));
+  joy.addEventListener("pointermove", (e) => { if(active) move(e); });
+  joy.addEventListener("pointerup", end);
+  joy.addEventListener("pointercancel", end);
+  $("joy-stop").onclick = () => { end(); stopAll(); };
 }
 
 function initNightMode(){
