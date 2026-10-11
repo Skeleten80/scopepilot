@@ -498,11 +498,31 @@ def test_session_log_written(monkeypatch, tmp_path):
 
 # -- rise / set / transit ------------------------------------------------------------
 
-def test_rise_set_transit_sane():
+def test_rise_set_transit_sane(monkeypatch):
+    # Pin "now": M42 below the horizon and rising, so the full
+    # rise < transit < set_ sequence falls inside the 24 h window.
+    from datetime import datetime, timezone
+    from scopepilot import astro
+    monkeypatch.setattr(astro, "utcnow",
+                        lambda: datetime(2026, 10, 12, 2, 0,
+                                         tzinfo=timezone.utc))
     rise, set_, transit = bridge._rise_set_transit(
-        5.588, -5.391, 43.3767, -80.9809)  # M42: rises and sets nightly
+        5.588, -5.391, 43.3767, -80.9809)  # M42
     assert rise and set_ and transit
     assert rise < transit < set_
+
+
+def test_rise_set_transit_already_up(monkeypatch):
+    # Pin "now": M42 already above 20 deg and setting. The real rise
+    # (earlier today) and tonight's set are reported.
+    from datetime import datetime, timezone
+    from scopepilot import astro
+    pinned = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(astro, "utcnow", lambda: pinned)
+    rise, set_, transit = bridge._rise_set_transit(
+        5.588, -5.391, 43.3767, -80.9809)  # M42
+    assert rise and set_ and transit
+    assert rise < pinned.isoformat(timespec="minutes") < set_ < transit
 
 
 def test_tonight_has_rise_set(api):

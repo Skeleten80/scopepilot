@@ -180,14 +180,30 @@ def _rise_set_transit(
         samples.append((t, alt))
     transit = max(samples, key=lambda p: p[1])[0]
     rise = set_ = None
+    started_up = samples[0][1] >= min_alt_deg
     for i in range(1, len(samples)):
         prev_alt, alt = samples[i - 1][1], samples[i][1]
         if rise is None and prev_alt < min_alt_deg <= alt:
             rise = samples[i][0]
-        elif rise is not None and prev_alt >= min_alt_deg > alt:
+        elif (set_ is None and prev_alt >= min_alt_deg > alt
+                and (rise is not None or started_up)):
+            # First downward crossing is tonight's set when the object
+            # started the window already above min_alt (it rose before
+            # the window, so rise stays None). Don't pair it with a later
+            # rise -- that belongs to the next apparition.
             set_ = samples[i][0]
             break
     iso = lambda t: t.isoformat(timespec="minutes") if t else None  # noqa: E731
+    if started_up:
+        # Already up: walk back up to 12 h to find when it actually rose.
+        prev_t = now
+        for i in range(1, int(12 * 60 / step_min) + 1):
+            t = now - timedelta(minutes=i * step_min)
+            _az, alt = radec_to_altaz(ra_h, dec_d, lat, lon, t)
+            if alt < min_alt_deg:
+                rise = prev_t
+                break
+            prev_t = t
     return iso(rise), iso(set_), iso(transit)
 
 
