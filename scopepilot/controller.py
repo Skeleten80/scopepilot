@@ -371,6 +371,191 @@ class TelescopeController:
         self._log_event("track", mode=nexstar.TRACKING_MODES[mode_id])
         return nexstar.TRACKING_MODES[mode_id]
 
+    # -- differential tracking (lunar / solar / satellite) -------------------
+    #: Mean RA drift vs sidereal, arcsec/s (lunar varies; refined live).
+    _RATE_OFFSETS = {"lunar": -0.549, "solar": -0.0411}
+
+    def track_rate(self, name: str) -> str:
+        """Track the Moon/Sun by applying a differential guide-rate offset.
+
+        The mount keeps its normal sidereal alt-az tracking; a background
+        thread measures the target's alt-az angular velocity versus the
+        sidereal velocity at the same sky position and applies the
+        difference as AUX guide-rate offsets (``MC_SET_POS/NEG_GUIDERATE``),
+        refreshed every 60 s. ``"sidereal"`` stops the offset thread.
+        """
+        import threading
+
+        from scopepilot import ephem
+        key = name.lower()
+        if key not in ("lunar", "solar", "sidereal"):
+            raise ValueError("track_rate: choose lunar, solar, or sidereal")
+        self.track_stop()
+        if key == "sidereal":
+            return "sidereal"
+        self._require_connected()
+        if self.site_lat is None or self.site_lon is None:
+            raise ValueError("set site_lat/site_lon before differential tracking")
+        try:
+            self.backend.variable_rate("az", 0.0)
+        except NotImplementedError as exc:
+            raise NotImplementedError(
+                "differential tracking needs the serial/sim backend "
+                "(AUX guide rates)") from exc
+        stop = threading.Event()
+        self._track_stop_ev = stop
+        self._rate_tracking = key
+
+        def loop() -> None:
+            while not stop.wait(60.0):
+                try:
+                    self._apply_rate_offset(key)
+                except Exception:
+                    continue  # never kill the thread on a transient error
+
+        self._apply_rate_offset(key)  # apply immediately, fail fast
+        t = threading.Thread(target=loop, daemon=True,
+                             name=f"scopepilot-track-{key}")
+        self._track_thread = t
+        t.start()
+        self._log_event("track_rate", rate=key)
+        return key
+
+    def _sky_velocity(self, ra_h: float, dec_d: float, dt_s: float = 30.0
+                      ) -> tuple[float, float]:
+        """Alt-az angular velocity ("/s) of a fixed RA/Dec point."""
+        from datetime import timedelta
+
+        from scopepilot.astro import wrap180
+        t0 = utcnow()
+        t1 = t0 + timedelta(seconds=dt_s)
+        az0, alt0 = radec_to_altaz(ra_h, dec_d, self.site_lat, self.site_lon, t0)
+        az1, alt1 = radec_to_altaz(ra_h, dec_d, self.site_lat, self.site_lon, t1)
+        return wrap180(az1 - az0) * 3600.0 / dt_s, (alt1 - alt0) * 3600.0 / dt_s
+
+    def _apply_rate_offset(self, key: str) -> None:
+        """One differential guide-rate update for lunar/solar."""
+        from datetime import timedelta
+
+        from scopepilot import ephem
+        from scopepilot.astro import wrap180
+        t0 = utcnow()
+        t1 = t0 + timedelta(seconds=30.0)
+        if key == "lunar":
+            ra0, dec0 = ephem.moon_radec(t0)
+            ra1, dec1 = ephem.moon_radec(t1)
+        else:
+            ra0, dec0 = ephem._sun_radec(t0)
+            ra1, dec1 = ephem._sun_radec(t1)
+        az0, alt0 = radec_to_altaz(ra0, dec0, self.site_lat, self.site_lon, t0)
+        az1, alt1 = radec_to_altaz(ra1, dec1, self.site_lat, self.site_lon, t1)
+        tgt_vaz = wrap180(az1 - az0) * 3600.0 / 30.0
+        tgt_valt = (alt1 - alt0) * 3600.0 / 30.0
+        sid_vaz, sid_valt = self._sky_velocity(ra0, dec0)
+        self.backend.variable_rate("az", tgt_vaz - sid_vaz)
+        self.backend.variable_rate("alt", tgt_valt - sid_valt)
+
+    def track_satellite(self, norad_id: int, update_hz: float = 2.0) -> dict:
+        """Live-track a satellite; returns immediately, runs in background.
+
+        Propagates the TLE with SGP4 and applies the differential alt-az
+        rate as guide offsets at *update_hz*. Stop with :meth:`track_stop`.
+        """
+        import threading
+
+        from scopepilot import ephem
+        from scopepilot.astro import wrap180
+        self.track_stop()
+        self._require_connected()
+        if self.site_lat is None or self.site_lon is None:
+            raise ValueError("set site_lat/site_lon before satellite tracking")
+        try:
+            self.backend.variable_rate("az", 0.0)
+        except NotImplementedError as exc:
+            raise NotImplementedError(
+                "satellite tracking needs the serial/sim backend") from exc
+        # Fail fast on bad TLE / missing sgp4 before starting the thread.
+        ephem.sat_altaz(norad_id, self.site_lat, self.site_lon)
+        stop = threading.Event()
+        self._track_stop_ev = stop
+        self._rate_tracking = f"sat-{norad_id}"
+        period = 1.0 / max(0.5, min(5.0, update_hz))
+
+        def loop() -> None:
+            from datetime import timedelta
+
+            from scopepilot.astro import altaz_to_radec
+            while not stop.wait(period):
+                try:
+                    t0 = utcnow()
+                    az0, alt0 = ephem.sat_altaz(norad_id, self.site_lat,
+                                               self.site_lon, t0)
+                    t1 = t0 + timedelta(seconds=1.0)
+                    az1, alt1 = ephem.sat_altaz(norad_id, self.site_lat,
+                                               self.site_lon, t1)
+                    saz = wrap180(az1 - az0) * 3600.0
+                    salt = (alt1 - alt0) * 3600.0
+                    # Guide rates add to the mount's sidereal tracking, so
+                    # subtract the sidereal component at this sky position.
+                    sra, sdec = altaz_to_radec(az0, alt0, self.site_lat,
+                                               self.site_lon, t0)
+                    vaz, valt = self._sky_velocity(sra, sdec)
+                    saz = max(-16000.0, min(16000.0, saz - vaz))
+                    salt = max(-16000.0, min(16000.0, salt - valt))
+                    self.backend.variable_rate("az", saz)
+                    self.backend.variable_rate("alt", salt)
+                except Exception:
+                    continue
+
+        t = threading.Thread(target=loop, daemon=True,
+                             name=f"scopepilot-sat-{norad_id}")
+        self._track_thread = t
+        t.start()
+        self._log_event("track_sat", norad_id=norad_id)
+        return {"tracking": self._rate_tracking}
+
+    def track_stop(self) -> None:
+        """Stop any differential tracking thread and zero guide rates."""
+        ev = getattr(self, "_track_stop_ev", None)
+        if ev is not None:
+            ev.set()
+            th = getattr(self, "_track_thread", None)
+            if th is not None:
+                th.join(timeout=3.0)
+            self._track_stop_ev = None
+            self._track_thread = None
+        self._rate_tracking = None
+        try:
+            if getattr(self, "backend", None) is not None:
+                self.backend.variable_rate("az", 0.0)
+                self.backend.variable_rate("alt", 0.0)
+        except (NotImplementedError, Exception):
+            pass
+
+    @property
+    def rate_tracking(self) -> str | None:
+        """Active differential rate name ("lunar"/"solar"/"sat-N") or None."""
+        return getattr(self, "_rate_tracking", None)
+
+    def sat_passes(self, norad_id: int, hours: float = 24.0) -> list[dict]:
+        """Upcoming passes of a satellite above 20° for the site."""
+        from scopepilot import ephem
+        if self.site_lat is None or self.site_lon is None:
+            raise ValueError("set site_lat/site_lon first")
+        return ephem.sat_passes(norad_id, self.site_lat, self.site_lon,
+                                hours=hours)
+
+    def goto_ephem(self, name: str, wait: bool = True,
+                   timeout: float = 120.0) -> dict:
+        """Slew to a comet/asteroid by name (JPL SBDB elements, cached)."""
+        from scopepilot import ephem
+        ra, dec, el = ephem.ephem_radec(name)
+        ok = self.goto_radec(ra, dec, wait=wait, timeout=timeout)
+        return {"name": el.get("name", name), "ra_hours": round(ra, 4),
+                "dec_deg": round(dec, 3), "settled": ok,
+                "elements": {k: el[k] for k in
+                             ("a_au", "e", "i_deg") if k in el}}
+
     # -- manual jog ------------------------------------------------------------
     def jog(
         self,

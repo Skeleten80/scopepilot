@@ -63,6 +63,26 @@ from scopepilot.pointing import suggest_alignment_stars
 log = logging.getLogger(__name__)
 _HTML_PATH = Path(__file__).with_name("dash.html")
 
+_MANIFEST_JSON = """{
+  "name": "ScopePilot",
+  "short_name": "ScopePilot",
+  "description": "Hand-controller replacement for the Celestron NexStar 6SE",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",
+             "purpose": "any"}]
+}"""
+
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="112" fill="#0b1020"/>
+<circle cx="256" cy="256" r="150" fill="none" stroke="#7dd3fc" stroke-width="18"/>
+<circle cx="256" cy="256" r="46" fill="#7dd3fc"/>
+<path d="M256 106v-46M256 452v-46M106 256H60M452 256h-46" stroke="#7dd3fc" stroke-width="18" stroke-linecap="round"/>
+<circle cx="352" cy="160" r="14" fill="#fbbf24"/>
+</svg>"""
+
 
 class _ScopeState:
     def __init__(self, controller: TelescopeController, make_rig=None,
@@ -268,6 +288,7 @@ def _snapshot(state: _ScopeState) -> dict:
         "min_alt_deg": state.controller.min_alt,
         "max_alt_deg": state.controller.max_alt,
         "manual_override": state.claim_snapshot(),
+        "tracking_rate": state.controller.rate_tracking,
         "server_time": time.time(),
     }
 
@@ -295,6 +316,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _ok(self, **extra) -> None:
         self._send_json({"ok": True, **extra})
+
+    def _serve_bytes(self, body: bytes, ctype: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _fail(self, err: Exception, code: int = 500) -> None:
         self._send_json({"ok": False, "error": str(err)}, code=code)
@@ -348,7 +376,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._fail(ValueError(
                         "no site configured; pass ?lat=&lon="), 400)
                 else:
-                    items, src = bridge.tonight_list(lat, lon)
+                    avoid = qs.get("moon_avoid", ["1"])[0] not in ("0", "no", "false")
+                    items, src = bridge.tonight_list(lat, lon, moon_avoid=avoid)
                     self._send_json({"ok": True, "targets": items,
                                      "source": src})
             elif parsed.path == "/api/identify":
@@ -398,6 +427,71 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/adaptive":
                 self._send_json({"ok": True, "enabled":
                                  self.state.controller.adaptive_pointing})
+            elif parsed.path == "/manifest.json":
+                self._serve_bytes(_MANIFEST_JSON.encode(),
+                                  "application/manifest+json")
+            elif parsed.path == "/icon.svg":
+                self._serve_bytes(_ICON_SVG.encode(), "image/svg+xml")
+            elif parsed.path == "/api/mosaic":
+                from scopepilot import mosaic as mosaic_mod
+                qs = parse_qs(parsed.query)
+                name = qs.get("name", [""])[0]
+                ra_q, dec_q = qs.get("ra_hours", [None])[0], qs.get("dec_deg", [None])[0]
+                if ra_q is not None and dec_q is not None:
+                    ra, dec, src = float(ra_q), float(dec_q), "explicit"
+                elif name:
+                    ra, dec, src = bridge.resolve_target(name)
+                else:
+                    self._fail(ValueError("give ?name= or ?ra_hours=&dec_deg="), 400)
+                    return
+                fov = qs.get("fov", ["0.85x0.57"])[0]
+                try:
+                    fw, fh = [float(x) for x in fov.lower().split("x")]
+                except ValueError:
+                    self._fail(ValueError("bad ?fov=, use WxH"), 400)
+                    return
+                size = qs.get("size", [None])[0]
+                nx = qs.get("nx", [None])[0]
+                ny = qs.get("ny", [None])[0]
+                try:
+                    panels = mosaic_mod.plan_mosaic(
+                        ra, dec, fw, fh,
+                        overlap=float(qs.get("overlap", ["0.15"])[0]),
+                        width_deg=float(size.split("x")[0]) if size else None,
+                        height_deg=float(size.split("x")[1]) if size else None,
+                        nx=int(nx) if nx else None,
+                        ny=int(ny) if ny else None)
+                except ValueError as exc:
+                    self._fail(exc, 400)
+                    return
+                self._send_json({"ok": True, "panels": panels,
+                                 "source": src})
+            elif parsed.path == "/api/sat-pass":
+                ctl = self.state.controller
+                qs = parse_qs(parsed.query)
+                try:
+                    passes = ctl.sat_passes(
+                        int(qs.get("norad", ["25544"])[0]),
+                        hours=float(qs.get("hours", ["24"])[0]))
+                except (RuntimeError, ValueError) as exc:
+                    self._fail(exc, 400)
+                    return
+                self._send_json({"ok": True, "passes": passes})
+            elif parsed.path == "/api/ephem":
+                from scopepilot import ephem as ephem_mod
+                qs = parse_qs(parsed.query)
+                name = qs.get("name", [""])[0]
+                if not name:
+                    self._fail(ValueError("give ?name="), 400)
+                    return
+                try:
+                    ra, dec, el = ephem_mod.ephem_radec(name)
+                except LookupError as exc:
+                    self._fail(exc, 404)
+                    return
+                self._send_json({"ok": True, "name": el.get("name", name),
+                                 "ra_hours": ra, "dec_deg": dec,
+                                 "a_au": el["a_au"], "e": el["e"]})
             else:
                 self._send_json({"ok": False, "error": "not found"}, 404)
         except Exception as exc:  # never leak a traceback to the UI
@@ -454,6 +548,31 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/track":
                 mode = ctl.set_tracking(body.get("mode", "alt-az"))
                 self._ok(tracking_mode=mode)
+            elif parsed.path == "/api/track-rate":
+                try:
+                    rate = ctl.track_rate(body.get("rate", "sidereal"))
+                except (ValueError, NotImplementedError) as exc:
+                    self._fail(exc, 400)
+                    return
+                self._ok(tracking_rate=rate)
+            elif parsed.path == "/api/sat-track":
+                try:
+                    rep = ctl.track_satellite(int(body.get("norad", 25544)),
+                                              update_hz=float(body.get("hz", 2.0)))
+                except (RuntimeError, ValueError, NotImplementedError) as exc:
+                    self._fail(exc, 400)
+                    return
+                self._ok(**rep)
+            elif parsed.path == "/api/sat-stop":
+                ctl.track_stop()
+                self._ok()
+            elif parsed.path == "/api/goto-ephem":
+                try:
+                    rep = ctl.goto_ephem(body.get("name", ""), wait=False)
+                except LookupError as exc:
+                    self._fail(exc, 404)
+                    return
+                self._ok(**rep)
             elif parsed.path == "/api/park":
                 ctl.park(wait=False)
                 self._ok()

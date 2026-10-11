@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ScopePilot — Telescope Dashboard</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0b1020">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ScopePilot">
+<link rel="apple-touch-icon" href="/icon.svg">
 <style>
 :root{
   --bg:#0b1220; --card:#141d31; --card2:#1a2440; --text:#eef2fb; --dim:#9aa7c4;
@@ -109,6 +116,7 @@ body.night #log{background:#0d0202}
     <span class="pill" id="pill-conn">connecting…</span>
     <span class="pill" id="pill-track"></span>
     <span class="pill" id="pill-model">model: off</span>
+    <span class="pill" id="pill-gamepad">🎮 no gamepad</span>
   </div>
   <button id="night-toggle" class="ghost" title="Red light for dark adaptation">🌙 Night</button>
 </header>
@@ -149,6 +157,7 @@ body.night #log{background:#0d0202}
     <div class="hint" style="text-align:center;margin:-.3rem 0 .8rem">Drag the knob — direction steers, distance sets speed. Release to stop.</div>
     <div class="row" style="justify-content:center">
       <button id="joy-stop" class="danger">⏹ Stop</button>
+      <button id="btn-wakelock" class="ghost" title="Keep this screen from sleeping">🔒 Keep screen on</button>
     </div>
     <label for="rate">Slew speed: <b id="rate-label">5 · medium</b></label>
     <input type="range" id="rate" min="1" max="9" value="5" step="1">
@@ -189,6 +198,51 @@ body.night #log{background:#0d0202}
     <div class="list" id="user-objects"></div>
   </section>
 
+  <section class="card">
+    <h2>Mosaic <small>— tile big targets for a small FOV</small></h2>
+    <div class="hint">M31 is 3° wide; your 6SE+T7i sees 0.85°×0.57°. Panels are
+      computed with overlap and walked in snake order.</div>
+    <div class="row">
+      <input type="text" id="mos-target" placeholder="Target: M31, M45…" style="flex:1;min-width:140px">
+    </div>
+    <div class="row">
+      <label>FOV° <input type="text" id="mos-fov" value="0.85x0.57" style="width:7em"></label>
+      <label>Overlap <input type="text" id="mos-overlap" value="0.15" inputmode="decimal" style="width:4em"></label>
+      <label>Size° <input type="text" id="mos-size" value="3x2" placeholder="3x2" style="width:5em"></label>
+      <button id="btn-mosaic">🧩 Plan panels</button>
+    </div>
+    <div class="list" id="mosaic-list"></div>
+    <div class="row">
+      <button id="btn-mosaic-go" class="primary" style="display:none">▶ Walk panels</button>
+      <button id="btn-mosaic-stop" class="danger" style="display:none">■ Stop</button>
+      <span class="statusline" id="mosaic-status"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Satellites &amp; wanderers</h2>
+    <h3>Satellite passes <small>— TLE via CelesTrak</small></h3>
+    <div class="row">
+      <input type="text" id="sat-norad" value="25544" inputmode="numeric" placeholder="NORAD id (ISS=25544)" style="width:11em">
+      <button id="btn-satpass">🔭 Predict passes</button>
+    </div>
+    <div class="list" id="satpass-list"></div>
+    <div class="row">
+      <button id="btn-sattrack" class="primary">▶ Track satellite</button>
+      <button id="btn-satstop" class="danger" style="display:none">■ Stop tracking</button>
+      <span class="statusline" id="sat-status"></span>
+    </div>
+    <div class="hint">Needs the <b>sgp4</b> package (<span class="mono">pip install sgp4</span>).
+      Tracking applies differential guide rates; the mount keeps sidereal underneath.</div>
+    <h3>Comets &amp; asteroids <small>— JPL Small-Body Database</small></h3>
+    <div class="row">
+      <input type="text" id="ephem-name" placeholder="e.g. 12P/Pons-Brooks, Ceres" style="flex:1;min-width:180px">
+      <button id="btn-ephem">📍 Locate</button>
+      <button id="btn-ephem-go" class="primary">Go</button>
+    </div>
+    <div class="statusline" id="ephem-result"></div>
+  </section>
+
   <section class="card" id="card-align">
     <h2>Alignment <small>— no hand controller needed</small></h2>
     <div class="model-status" id="model-status">checking…</div>
@@ -217,6 +271,15 @@ body.night #log{background:#0d0202}
       <button data-mode="alt-az">Stars (alt-az)</button>
       <button data-mode="eq-north">EQ north</button>
       <button data-mode="eq-south">EQ south</button>
+    </div>
+    <div class="row" style="margin-top:.5rem">
+      <span class="hint">Rate:</span>
+      <div class="seg" id="rate-seg">
+        <button data-rate="sidereal" class="active">Sidereal</button>
+        <button data-rate="lunar">🌙 Lunar</button>
+        <button data-rate="solar">☀️ Solar</button>
+      </div>
+      <span class="statusline" id="rate-status"></span>
     </div>
     <h3>Position</h3>
     <div class="row">
@@ -342,7 +405,8 @@ async function refreshState(){
     pc.className = "pill " + (s.connected ? "ok" : "bad");
     $("hdr-model").textContent = s.model ? `· ${s.model}` : "";
     const pt = $("pill-track");
-    pt.textContent = "tracking: " + (s.tracking_mode || "?");
+    pt.textContent = "tracking: " + (s.tracking_mode || "?") +
+      (s.tracking_rate && s.tracking_rate !== "sidereal" ? ` (${s.tracking_rate})` : "");
     pt.className = "pill" + (s.tracking_mode === "off" ? " bad" : " ok");
     const pm = $("pill-model");
     const modelOn = !!(s.note && s.note.includes("model"));
@@ -396,6 +460,7 @@ async function refreshTonight(){
       if(t.peak_alt_deg != null) bits.push(`peaks ${t.peak_alt_deg}°`);
       if(t.hours_above != null) bits.push(`${t.hours_above} h up`);
       if(t.alt_now_deg != null) bits.push(`now ${t.alt_now_deg}°`);
+      if(t.moon_sep_deg != null) bits.push(`🌙 ${t.moon_sep_deg}° away`);
       const rs = [];
       const r = fmtLocal(t.rise_utc), tr = fmtLocal(t.transit_utc),
             s2 = fmtLocal(t.set_utc);
@@ -432,6 +497,140 @@ async function doGoto(payload){
 }
 
 let searchTimer = null;
+
+let mosaicPanels = [], mosaicWalking = false;
+async function planMosaic(){
+  const box = $("mosaic-list");
+  box.innerHTML = "";
+  mosaicPanels = [];
+  $("btn-mosaic-go").style.display = "none";
+  try{
+    const q = new URLSearchParams({
+      name: $("mos-target").value.trim(),
+      fov: $("mos-fov").value.trim() || "0.85x0.57",
+      overlap: $("mos-overlap").value.trim() || "0.15",
+      size: $("mos-size").value.trim(),
+    });
+    const d = await api("/api/mosaic?" + q.toString());
+    mosaicPanels = d.panels || [];
+    $("mosaic-status").textContent =
+      `${mosaicPanels.length} panels (${d.source})`;
+    for(const p of mosaicPanels){
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = `Panel ${p.panel}/${mosaicPanels.length}`;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = `RA ${fmtRA(p.ra_hours)}  Dec ${fmtDec(p.dec_deg)}`;
+      grow.appendChild(nm); grow.appendChild(sub);
+      const go = document.createElement("button");
+      go.textContent = "Go";
+      go.onclick = () => doGoto({ra_hours: p.ra_hours, dec_deg: p.dec_deg});
+      row.appendChild(grow); row.appendChild(go);
+      box.appendChild(row);
+    }
+    if(mosaicPanels.length){
+      $("btn-mosaic-go").style.display = "";
+      log(`Mosaic planned: ${mosaicPanels.length} panels`);
+    }
+  }catch(e){ $("mosaic-status").textContent = "Mosaic failed: " + e.message; }
+}
+async function walkMosaic(){
+  if(!mosaicPanels.length || mosaicWalking) return;
+  mosaicWalking = true;
+  $("btn-mosaic-go").style.display = "none";
+  $("btn-mosaic-stop").style.display = "";
+  try{
+    for(const p of mosaicPanels){
+      if(!mosaicWalking) break;
+      $("mosaic-status").textContent =
+        `Panel ${p.panel}/${mosaicPanels.length} — slewing…`;
+      await api("/api/goto", {method: "POST",
+        body: {ra_hours: p.ra_hours, dec_deg: p.dec_deg}});
+      $("mosaic-status").textContent =
+        `Panel ${p.panel}/${mosaicPanels.length} — image now`;
+      log(`Mosaic panel ${p.panel}/${mosaicPanels.length} settled`);
+      await new Promise((res) => {
+        const t = setInterval(() => {
+          if(!mosaicWalking){ clearInterval(t); res(); }
+        }, 300);
+        setTimeout(() => { clearInterval(t); res(); }, 90000);
+      });
+    }
+  }catch(e){ log("Mosaic walk failed: " + e.message); }
+  mosaicWalking = false;
+  $("btn-mosaic-stop").style.display = "none";
+  if(mosaicPanels.length) $("btn-mosaic-go").style.display = "";
+  $("mosaic-status").textContent = "Mosaic walk finished";
+}
+
+async function predictPasses(){
+  const box = $("satpass-list");
+  box.innerHTML = "";
+  try{
+    const norad = $("sat-norad").value.trim() || "25544";
+    const d = await api(`/api/sat-pass?norad=${encodeURIComponent(norad)}&hours=24`);
+    if(!d.passes.length){
+      box.innerHTML = '<div class="hint">No passes above 20° in the next 24 h.</div>';
+      return;
+    }
+    for(const p of d.passes){
+      const row = document.createElement("div");
+      row.className = "item";
+      const grow = document.createElement("div");
+      grow.className = "grow";
+      const nm = document.createElement("div");
+      nm.className = "name"; nm.textContent = `NORAD ${norad}`;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = `↑ ${fmtLocal(p.rise_utc)} · ↓ ${fmtLocal(p.set_utc)} · max ${p.max_alt_deg}°`;
+      grow.appendChild(nm); grow.appendChild(sub);
+      row.appendChild(grow);
+      box.appendChild(row);
+    }
+  }catch(e){ box.innerHTML = `<div class="hint">Pass prediction: ${e.message}</div>`; }
+}
+async function trackSatellite(){
+  try{
+    const norad = parseInt(($("sat-norad").value.trim() || "25544"), 10);
+    const d = await api("/api/sat-track", {method: "POST", body: {norad}});
+    $("btn-sattrack").style.display = "none";
+    $("btn-satstop").style.display = "";
+    $("sat-status").textContent = `Tracking ${d.tracking} — differential guide rates`;
+    log("Satellite tracking: " + d.tracking);
+  }catch(e){ $("sat-status").textContent = "Track failed: " + e.message; }
+}
+async function stopSatellite(){
+  try{ await api("/api/sat-stop", {method: "POST", body: {}}); }
+  catch(e){ /* already stopped */ }
+  $("btn-sattrack").style.display = "";
+  $("btn-satstop").style.display = "none";
+  $("sat-status").textContent = "";
+  log("Satellite tracking stopped");
+}
+async function locateEphem(){
+  const name = $("ephem-name").value.trim();
+  if(!name) return;
+  try{
+    const d = await api("/api/ephem?name=" + encodeURIComponent(name));
+    $("ephem-result").textContent =
+      `${d.name}: RA ${fmtRA(d.ra_hours)} Dec ${fmtDec(d.dec_deg)} (a=${d.a_au.toFixed(3)} AU e=${d.e.toFixed(4)})`;
+  }catch(e){ $("ephem-result").textContent = "Locate failed: " + e.message; }
+}
+async function gotoEphem(){
+  const name = $("ephem-name").value.trim();
+  if(!name) return;
+  try{
+    const d = await api("/api/goto-ephem", {method: "POST", body: {name}});
+    $("ephem-result").textContent =
+      `Slewing to ${d.name}: RA ${fmtRA(d.ra_hours)} Dec ${fmtDec(d.dec_deg)}`;
+    log(`GoTo ${d.name} (ephemeris)`);
+  }catch(e){ $("ephem-result").textContent = "GoTo failed: " + e.message; }
+}
+
 async function runSearch(){
   const q = $("search").value.trim();
   const box = $("search-results");
@@ -643,38 +842,43 @@ async function loadAlignStars(){
   }catch(e){ box.innerHTML = `<div class="hint">Stars: ${e.message}</div>`; }
 }
 
+/* Shared slew driver: nx/ny in [-1, 1] (screen coords: +x right, +y down).
+   Used by the joystick, the gamepad, and keyboard helpers. */
+const JOY_DEAD = 0.10;
+let _joyLastSent = "";
+async function driveJoystick(nx, ny){
+  const max = slewRate();
+  const azRate = Math.abs(nx) < JOY_DEAD ? 0 : Math.max(1, Math.round(Math.abs(nx) * max));
+  const altRate = Math.abs(ny) < JOY_DEAD ? 0 : Math.max(1, Math.round(Math.abs(ny) * max));
+  const key = (nx < -JOY_DEAD ? "-" : nx > JOY_DEAD ? "+" : "0") + azRate + "|" +
+              (ny < -JOY_DEAD ? "-" : ny > JOY_DEAD ? "+" : "0") + altRate;
+  if(key === _joyLastSent) return;
+  _joyLastSent = key;
+  try{
+    if(azRate) await api("/api/jog", {method: "POST",
+      body: {direction: nx > 0 ? "right" : "left", rate: azRate}});
+    else await api("/api/jog_stop", {method: "POST", body: {axis: "az"}});
+    if(altRate) await api("/api/jog", {method: "POST",
+      body: {direction: ny > 0 ? "down" : "up", rate: altRate}});
+    else await api("/api/jog_stop", {method: "POST", body: {axis: "alt"}});
+  }catch(err){ log("Jog failed: " + err.message); }
+}
+async function stopJoystick(){
+  _joyLastSent = "";
+  try{ await api("/api/jog_stop", {method: "POST", body: {}}); }
+  catch(err){ /* already stopped */ }
+}
+
 function initPad(){
   /* Virtual joystick: drag anywhere in the circle. Direction steers both
      axes at once (diagonals included); deflection sets per-axis speed
      1..slewRate(). Release springs back and stops. */
   const joy = $("joy"), knob = $("joy-knob");
-  const DEAD = 0.10;  /* inside this radius: that axis stops */
-  let active = false, lastSent = "";
+  let active = false;
   const travel = () => joy.clientWidth / 2 - 39;  /* knob centre travel */
 
   const setKnob = (dx, dy) => {
     knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-  };
-  const stopAll = async () => {
-    try{ await api("/api/jog_stop", {method: "POST", body: {}}); }
-    catch(err){ /* already stopped */ }
-  };
-  const drive = async (nx, ny) => {
-    const max = slewRate();
-    const azRate = Math.abs(nx) < DEAD ? 0 : Math.max(1, Math.round(Math.abs(nx) * max));
-    const altRate = Math.abs(ny) < DEAD ? 0 : Math.max(1, Math.round(Math.abs(ny) * max));
-    const key = (nx < -DEAD ? "-" : nx > DEAD ? "+" : "0") + azRate + "|" +
-                (ny < -DEAD ? "-" : ny > DEAD ? "+" : "0") + altRate;
-    if(key === lastSent) return;
-    lastSent = key;
-    try{
-      if(azRate) await api("/api/jog", {method: "POST",
-        body: {direction: nx > 0 ? "right" : "left", rate: azRate}});
-      else await api("/api/jog_stop", {method: "POST", body: {axis: "az"}});
-      if(altRate) await api("/api/jog", {method: "POST",
-        body: {direction: ny > 0 ? "down" : "up", rate: altRate}});
-      else await api("/api/jog_stop", {method: "POST", body: {axis: "alt"}});
-    }catch(err){ log("Jog failed: " + err.message); }
   };
   const move = (e) => {
     const r = joy.getBoundingClientRect(), t = travel();
@@ -683,14 +887,14 @@ function initPad(){
     const len = Math.hypot(dx, dy);
     if(len > t){ dx = dx / len * t; dy = dy / len * t; }
     setKnob(dx, dy);
-    drive(dx / t, dy / t);
+    driveJoystick(dx / t, dy / t);
   };
   const end = () => {
     if(!active) return;
-    active = false; lastSent = "";
+    active = false;
     joy.classList.remove("active");
     setKnob(0, 0);
-    stopAll();
+    stopJoystick();
   };
   joy.addEventListener("pointerdown", (e) => {
     e.preventDefault();
@@ -702,7 +906,76 @@ function initPad(){
   joy.addEventListener("pointermove", (e) => { if(active) move(e); });
   joy.addEventListener("pointerup", end);
   joy.addEventListener("pointercancel", end);
-  $("joy-stop").onclick = () => { end(); stopAll(); };
+  $("joy-stop").onclick = () => { end(); stopJoystick(); };
+}
+
+/* Gamepad: left stick drives the shared joystick driver; any button stops. */
+let _gamepadOn = false, _gamepadWasActive = false;
+function initGamepad(){
+  const pill = $("pill-gamepad");
+  const show = (txt, cls) => {
+    pill.textContent = txt;
+    pill.className = "pill " + (cls || "");
+  };
+  window.addEventListener("gamepadconnected", (e) => {
+    _gamepadOn = true;
+    show("🎮 " + (e.gamepad.id || "gamepad").slice(0, 18), "ok");
+    log("Gamepad connected: left stick slews, any button stops");
+  });
+  window.addEventListener("gamepaddisconnected", () => {
+    _gamepadOn = false;
+    show("🎮 no gamepad", "");
+    stopJoystick();
+  });
+  show("🎮 no gamepad", "");
+  setInterval(() => {
+    if(!_gamepadOn) return;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads && [...pads].find((g) => g && g.connected);
+    if(!gp) return;
+    const nx = gp.axes[0] || 0, ny = gp.axes[1] || 0;
+    const active = Math.hypot(nx, ny) > JOY_DEAD;
+    if(gp.buttons.some((b) => b.pressed)){
+      if(_gamepadWasActive){ stopJoystick(); _gamepadWasActive = false; }
+      return;
+    }
+    if(active){
+      const len = Math.hypot(nx, ny), cl = Math.min(1, len);
+      driveJoystick(nx / len * cl, ny / len * cl);
+      _gamepadWasActive = true;
+    }else if(_gamepadWasActive){
+      stopJoystick();
+      _gamepadWasActive = false;
+    }
+  }, 120);
+}
+
+/* Screen wake lock: keeps a phone/tablet remote from sleeping mid-session. */
+let _wakeLock = null;
+async function initWakeLock(){
+  const btn = $("btn-wakelock");
+  if(!("wakeLock" in navigator)){
+    btn.style.display = "none";
+    return;
+  }
+  const setBtn = (on) => {
+    btn.textContent = on ? "🔓 Screen stays on" : "🔒 Keep screen on";
+    btn.classList.toggle("active", on);
+  };
+  btn.onclick = async () => {
+    try{
+      if(_wakeLock){ await _wakeLock.release(); _wakeLock = null; setBtn(false); }
+      else{ _wakeLock = await navigator.wakeLock.request("screen"); setBtn(true); }
+    }catch(e){ log("Wake lock failed: " + e.message); }
+  };
+  document.addEventListener("visibilitychange", async () => {
+    if(document.visibilityState === "visible" && _wakeLock === null &&
+       btn.classList.contains("active")){
+      try{ _wakeLock = await navigator.wakeLock.request("screen"); }
+      catch(e){ /* will retry next toggle */ }
+    }
+  });
+  setBtn(false);
 }
 
 function initNightMode(){
@@ -1045,12 +1318,22 @@ function renderResiduals(p){
 function init(){
   initNightMode();
   initPad();
+  initGamepad();
+  initWakeLock();
   initBacklash();
   initCordwrap();
   initLimits();
   initSites();
   initAdaptive();
   initKeys();
+  $("btn-mosaic").onclick = planMosaic;
+  $("btn-mosaic-go").onclick = walkMosaic;
+  $("btn-mosaic-stop").onclick = () => { mosaicWalking = false; };
+  $("btn-satpass").onclick = predictPasses;
+  $("btn-sattrack").onclick = trackSatellite;
+  $("btn-satstop").onclick = stopSatellite;
+  $("btn-ephem").onclick = locateEphem;
+  $("btn-ephem-go").onclick = gotoEphem;
   refreshSites();
   refreshFirstlight();
   $("rate").oninput = () => {
@@ -1114,6 +1397,28 @@ function init(){
       }catch(e){ log("Tracking failed: " + e.message); }
     };
   });
+  const setRateSeg = (rate) => {
+    document.querySelectorAll("#rate-seg button").forEach((x) =>
+      x.classList.toggle("active", x.dataset.rate === rate));
+  };
+  document.querySelectorAll("#rate-seg button").forEach((b) => {
+    b.onclick = async () => {
+      try{
+        const d = await api("/api/track-rate", {method: "POST",
+          body: {rate: b.dataset.rate}});
+        setRateSeg(d.tracking_rate);
+        $("rate-status").textContent =
+          d.tracking_rate === "sidereal" ? "" : `${d.tracking_rate} rate on`;
+        log("Tracking rate: " + d.tracking_rate);
+      }catch(e){ log("Rate failed: " + e.message); }
+    };
+  });
+  setInterval(async () => {
+    try{
+      const s = await api("/api/state");
+      if(s.tracking_rate) setRateSeg(s.tracking_rate);
+    }catch(e){ /* keep last */ }
+  }, 10000);
   $("btn-park").onclick = async () => {
     try{ await api("/api/park", {method: "POST", body: {}}); log("Parking…"); }
     catch(e){ log("Park failed: " + e.message); }

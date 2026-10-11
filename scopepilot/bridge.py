@@ -208,15 +208,40 @@ def _rise_set_transit(
 
 
 def tonight_list(
-    lat: float, lon: float, limit: int = 12, min_alt_deg: float = 20.0
+    lat: float, lon: float, limit: int = 12, min_alt_deg: float = 20.0,
+    moon_avoid: bool = True,
 ) -> tuple[list[dict], str]:
     """Tonight's best-placed targets for a site (HC Sky Tour idea).
 
     Prefers astrocapture's astropy-powered ``tonight_best``; falls back
     to the builtin bright-object table ranked by current altitude.
+    With *moon_avoid*, targets closer than ``20 + 40*illumination``
+    degrees to the Moon are dropped (wider exclusion at full moon) and
+    the survivors carry ``moon_sep_deg``.
     Returns (items, source).
     """
     from scopepilot.astro import radec_to_altaz, utcnow
+    from scopepilot.ephem import moon_illumination, moon_sep_deg
+
+    illum = moon_illumination()
+    min_sep = 20.0 + 40.0 * illum
+
+    def coords_of(name: str) -> tuple[float, float] | None:
+        try:
+            ra, dec, _src = resolve_target(name)
+            return ra, dec
+        except TargetNotFound:
+            return None
+
+    def moon_ok(item: dict) -> bool:
+        if not moon_avoid:
+            return True
+        c = coords_of(item["name"])
+        if c is None:
+            return True  # can't place it; don't filter blindly
+        sep = moon_sep_deg(c[0], c[1])
+        item["moon_sep_deg"] = round(sep, 1)
+        return sep >= min_sep
 
     try:
         from astrocapture.catalog import tonight_best  # type: ignore
@@ -234,6 +259,7 @@ def tonight_list(
             "set_utc": r.get("set_utc"),
             "transit_utc": r.get("peak_time_utc"),
         } for r in rows]
+        items = [it for it in items if moon_ok(it)]
         return items, "astrocapture-catalog"
     except Exception:
         pass
@@ -254,6 +280,7 @@ def tonight_list(
                 "rise_utc": rise, "set_utc": set_, "transit_utc": transit,
             })
     rows.sort(key=lambda r: -r["alt_now_deg"])
+    rows = [r for r in rows if moon_ok(r)]
     return rows[:limit], "scopepilot-builtin"
 
 
@@ -299,8 +326,14 @@ def read_night_plan(path: str | Path) -> list[dict]:
         if isinstance(t, str):
             plan.append({"name": t, "priority": 1.0})
         elif isinstance(t, dict) and t.get("name"):
-            plan.append({"name": t["name"],
-                         "priority": float(t.get("priority", 1.0))})
+            entry = {"name": t["name"],
+                     "priority": float(t.get("priority", 1.0))}
+            # Mosaic panels (and hand-written plans) may carry J2000
+            # coordinates directly instead of a catalog name.
+            if t.get("ra_hours") is not None and t.get("dec_deg") is not None:
+                entry["ra_hours"] = float(t["ra_hours"])
+                entry["dec_deg"] = float(t["dec_deg"])
+            plan.append(entry)
     # legacy single-target session block
     if not plan:
         sess = data.get("session") or {}

@@ -130,6 +130,42 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("targets", help="list / search known targets").add_argument(
         "query", nargs="?", default="")
 
+    mo = sub.add_parser("mosaic", help="plan a mosaic: tile a big target "
+                        "into panels for a small FOV")
+    mo.add_argument("target", help="target name (catalog) or RA_H,DEC_DEG")
+    mo.add_argument("--fov", default="0.85x0.57",
+                    help="field of view WxH in degrees (default 6SE+T7i)")
+    mo.add_argument("--overlap", type=float, default=0.15,
+                    help="panel overlap fraction 0-0.9")
+    mo.add_argument("--size", default=None,
+                    help="target extent WxH in degrees (panels derived)")
+    mo.add_argument("--nx", type=int, default=None, help="panel columns")
+    mo.add_argument("--ny", type=int, default=None, help="panel rows")
+    mo.add_argument("--out", default=None,
+                    help="write night-plan YAML for `queue --plan`")
+
+    ep = sub.add_parser("ephem", help="comet/asteroid position or goto "
+                        "(JPL SBDB elements, cached)")
+    ep.add_argument("name", help="e.g. '12P/Pons-Brooks', 'Ceres'")
+    ep.add_argument("--goto", action="store_true",
+                    help="slew to it (needs backend)")
+
+    sp2 = sub.add_parser("satpass", help="predict satellite passes "
+                         "(TLE via CelesTrak, needs 'sgp4' package)")
+    sp2.add_argument("norad", type=int, help="NORAD catalog id (ISS=25544)")
+    sp2.add_argument("--hours", type=float, default=24.0)
+
+    st = sub.add_parser("sat-track", help="live-track a satellite until "
+                        "Ctrl-C (needs 'sgp4' package)")
+    st.add_argument("norad", type=int, help="NORAD catalog id (ISS=25544)")
+    st.add_argument("--hz", type=float, default=2.0,
+                    help="guide-rate updates per second")
+
+    tr = sub.add_parser("track-rate", help="differential tracking rate: "
+                        "sidereal|lunar|solar (serial/sim backend)")
+    tr.add_argument("rate", choices=["sidereal", "lunar", "solar"],
+                    nargs="?", default="sidereal")
+
     d = sub.add_parser("dash", help="web hand-controller dashboard")
     d.add_argument("--host", default="127.0.0.1")
     d.add_argument("--port", dest="http_port", type=int, default=None)
@@ -144,6 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--dwell", type=float, default=0.0,
                    help="seconds to sit on each target after settle")
     q.add_argument("--timeout", type=float, default=300.0)
+    q.add_argument("--recenter-minutes", type=float, default=0.0,
+                   help="plate-solve and re-center every N minutes of dwell "
+                        "(needs astrocapture; 0 disables)")
 
     a = sub.add_parser("align",
                        help="software pointing model: align without HC menus")
@@ -596,11 +635,15 @@ def cmd_queue(args, cfg) -> int:
         try:
             for i, tgt in enumerate(plan, 1):
                 name = tgt["name"]
-                try:
-                    ra, dec, src = bridge.resolve_target(name)
-                except bridge.TargetNotFound as exc:
-                    print(f"[{i}/{len(plan)}] {name}: SKIP ({exc})")
-                    continue
+                src = "explicit-coords"
+                if tgt.get("ra_hours") is not None:
+                    ra, dec = tgt["ra_hours"], tgt["dec_deg"]
+                else:
+                    try:
+                        ra, dec, src = bridge.resolve_target(name)
+                    except bridge.TargetNotFound as exc:
+                        print(f"[{i}/{len(plan)}] {name}: SKIP ({exc})")
+                        continue
                 print(f"[{i}/{len(plan)}] {name}: slewing "
                       f"(RA {_fmt_ra(ra)} Dec {_fmt_deg(dec)} [{src}])…")
                 try:
@@ -610,13 +653,193 @@ def cmd_queue(args, cfg) -> int:
                     return 2
                 print("  settled ✓" if ok else "  TIMEOUT -- continuing")
                 if args.dwell > 0:
-                    print(f"  dwelling {args.dwell:.0f}s (image now, Ctrl-C to stop queue)…")
-                    time.sleep(args.dwell)
+                    _dwell_with_recenter(scope, name, ra, dec, args, cfg)
         except KeyboardInterrupt:
             print("\nqueue interrupted -- stopping mount")
             scope.abort()
             return 130
     print("\nqueue complete")
+    return 0
+
+
+def _dwell_with_recenter(scope, name: str, ra: float, dec: float,
+                         args, cfg) -> None:
+    """Sit on a target for the dwell time, re-centering periodically.
+
+    Every ``--recenter-minutes`` a plate solve runs via AstroCapture and
+    the mount is nudged back when it drifted beyond tolerance. Without
+    astrocapture installed (or recenter disabled) this is a plain sleep.
+    """
+    from scopepilot.center import closed_loop_center
+    dwell = args.dwell
+    interval = (args.recenter_minutes or 0.0) * 60.0
+    if interval <= 0:
+        print(f"  dwelling {dwell:.0f}s (image now, Ctrl-C to stop queue)…")
+        time.sleep(dwell)
+        return
+    try:
+        from scopepilot.center import AstroCaptureRig
+        rig = AstroCaptureRig(camera_driver=cfg.camera_driver)
+        rig.connect()
+        capture = rig  # rig(exposure_s) -> (ra, dec) | None
+    except Exception as exc:
+        print(f"  recenter unavailable ({exc}); plain dwell {dwell:.0f}s…")
+        time.sleep(dwell)
+        return
+    print(f"  dwelling {dwell:.0f}s with recenter every "
+          f"{interval / 60:.0f} min…")
+    deadline = time.monotonic() + dwell
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
+        if time.monotonic() >= deadline:
+            break
+        print("  recenter check: plate solving…")
+        try:
+            report = closed_loop_center(
+                scope, ra, dec, capture, tolerance_arcmin=1.0,
+                max_iters=2, on_event=lambda m: print(f"    {m}"))
+        except Exception as exc:
+            print(f"  recenter failed: {exc}")
+            continue
+        sep = report.get("final_sep_arcmin")
+        print(f"  recenter: {'converged' if report['converged'] else 'no solve'}"
+              + (f" ({sep:.1f}' off)" if sep is not None else ""))
+
+
+def _parse_fov(s: str) -> tuple[float, float]:
+    try:
+        w, h = s.lower().replace(" ", "").split("x")
+        return float(w), float(h)
+    except ValueError:
+        raise ValueError(f"bad --fov {s!r}; use WxH in degrees, e.g. 0.85x0.57")
+
+
+def _resolve_target_or_coords(spec: str) -> tuple[float, float, str]:
+    spec = spec.strip()
+    if "," in spec:
+        try:
+            ra_s, dec_s = spec.split(",", 1)
+            return float(ra_s), float(dec_s), "explicit"
+        except ValueError:
+            pass
+    return bridge.resolve_target(spec)
+
+
+def cmd_mosaic(args, cfg) -> int:
+    from scopepilot import mosaic as mosaic_mod
+    try:
+        ra, dec, src = _resolve_target_or_coords(args.target)
+    except bridge.TargetNotFound as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    fov_w, fov_h = _parse_fov(args.fov)
+    size = args.size.split("x") if args.size else (None, None)
+    try:
+        panels = mosaic_mod.plan_mosaic(
+            ra, dec, fov_w, fov_h, overlap=args.overlap,
+            width_deg=float(size[0]) if size[0] else None,
+            height_deg=float(size[1]) if size[1] else None,
+            nx=args.nx, ny=args.ny)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    print(f"mosaic: {args.target} -> {len(panels)} panels "
+          f"({fov_w}x{fov_h} deg, overlap {args.overlap:.0%}) [{src}]")
+    for p in panels:
+        print(f"  P{p['panel']}: RA {_fmt_ra(p['ra_hours'])} "
+              f"Dec {_fmt_deg(p['dec_deg'])}")
+    if args.out:
+        mosaic_mod.write_mosaic_yaml(args.out, panels, args.target)
+        print(f"\nwrote {args.out} -- run: scopepilot queue --plan {args.out}")
+    return 0
+
+
+def cmd_ephem(args, cfg) -> int:
+    from scopepilot import ephem as ephem_mod
+    try:
+        ra, dec, el = ephem_mod.ephem_radec(args.name)
+    except LookupError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"ERROR: ephemeris lookup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"{el.get('name', args.name)}: RA {_fmt_ra(ra)} Dec {_fmt_deg(dec)} "
+          f"(a={el['a_au']:.3f} AU e={el['e']:.4f})")
+    if args.goto:
+        with _controller(args, cfg) as scope:
+            rep = scope.goto_ephem(args.name)
+        print("settled ✓" if rep["settled"] else "TIMEOUT")
+    return 0
+
+
+def cmd_satpass(args, cfg) -> int:
+    from scopepilot import ephem as ephem_mod
+    lat, lon = cfg.site_lat, cfg.site_lon
+    if lat is None or lon is None:
+        print("ERROR: set site lat/lon first (scopepilot set-location)",
+              file=sys.stderr)
+        return 2
+    try:
+        passes = ephem_mod.sat_passes(args.norad, lat, lon, hours=args.hours)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if not passes:
+        print(f"no passes above 20° for NORAD {args.norad} "
+              f"in the next {args.hours:.0f}h")
+    for p in passes:
+        print(f"  rise {p['rise_utc']}  set {p['set_utc']}  "
+              f"max alt {p['max_alt_deg']}°")
+    return 0
+
+
+def cmd_sat_track(args, cfg) -> int:
+    with _controller(args, cfg) as scope:
+        try:
+            rep = scope.track_satellite(args.norad, update_hz=args.hz)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"tracking NORAD {args.norad} at {args.hz:.1f} Hz "
+              f"(Ctrl-C to stop)…")
+        try:
+            while True:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            scope.track_stop()
+            print("\ntracking stopped")
+    return 0
+
+
+def cmd_track_rate(args, cfg) -> int:
+    with _controller(args, cfg) as scope:
+        try:
+            rate = scope.track_rate(args.rate)
+        except (ValueError, NotImplementedError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        if rate == "sidereal":
+            print("differential tracking off; mount on sidereal")
+        else:
+            print(f"differential {rate} tracking on "
+                  f"(Ctrl-C to stop)…")
+            try:
+                while True:
+                    time.sleep(1.0)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                scope.track_stop()
+                print("\nback to sidereal")
     return 0
 
 
@@ -780,6 +1003,11 @@ _COMMANDS = {
     "queue": cmd_queue,
     "align": cmd_align,
     "center": cmd_center,
+    "mosaic": cmd_mosaic,
+    "ephem": cmd_ephem,
+    "satpass": cmd_satpass,
+    "sat-track": cmd_sat_track,
+    "track-rate": cmd_track_rate,
 }
 
 

@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "PyYAML>=6.0",
 ]
-optional-dependencies = { serial = ["pyserial>=3.5"] }
+optional-dependencies = { serial = ["pyserial>=3.5"], satellites = ["sgp4>=2.0"] }
 
 [project.scripts]
 scopepilot = "scopepilot.cli:main"

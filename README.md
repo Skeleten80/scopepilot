@@ -190,6 +190,32 @@ More things the console does beyond the HC:
   click: `scopepilot site save dark --lat 44.1 --lon -79.5 --min-alt 15`.
 - **Keyboard** — arrow keys jog at the slider rate, **Shift+arrows** always
   crawl (rate 1) for fine centering, spacebar stops everything.
+- **Gamepad** — plug in any USB/Bluetooth controller: the left stick
+  slews (same driver as the joystick), any button stops. The header pill
+  shows connection status. Glove-friendly winter observing.
+- **Mosaic planner** — tile big targets into panels for a small FOV
+  (`scopepilot mosaic M31 --size 3x2`, or the dashboard Mosaic card):
+  panel grid with overlap %, snake order, per-panel Go, or walk the whole
+  mosaic from the dashboard. `mosaic --out plan.yaml` feeds
+  `queue --plan` for unattended panel runs.
+- **Comets & asteroids** — `scopepilot ephem "12P/Pons-Brooks" --goto`
+  (or the dashboard's Satellites & wanderers card): orbital elements from
+  JPL's Small-Body Database (cached in `~/.scopepilot/ephem/`), propagated
+  with a built-in Kepler solver — no new dependencies.
+- **Satellite tracking** — `scopepilot satpass 25544` predicts ISS passes;
+  `scopepilot sat-track 25544` (or dashboard Track) live-tracks via TLE +
+  SGP4, applying differential guide rates at 2 Hz over the mount's sidereal
+  tracking. Needs `pip install "scopepilot[satellites]"`.
+- **Lunar/solar tracking rates** — the Telescope card's Rate control (or
+  `scopepilot track-rate lunar`): the mount keeps sidereal tracking while a
+  background thread applies the differential as AUX guide-rate offsets,
+  refreshed every 60 s. Serial/sim backends only.
+- **Moon-aware Tonight's best** — targets within `20 + 40·illumination`
+  degrees of the Moon are filtered out (wider at full moon); survivors show
+  their moon separation. `?moon_avoid=0` disables it.
+- **Drift-correcting queue** — `scopepilot queue --plan … --recenter-minutes 20`
+  plate-solves during each dwell (via AstroCapture) and nudges the mount
+  back when it drifts beyond 1′. Closes the loop all night on long runs.
 
 ### Phone / tablet remote (iOS, iPadOS)
 
@@ -212,7 +238,12 @@ charge; the phone is purely a remote.)
 3. Open Safari to `http://<computer-ip>:8765`. The cards stack
    single-column and the joystick is touch-ready (drag the knob, release
    to stop). Tip: Share → Add to Home Screen for a full-screen,
-   app-like remote.
+   app-like remote — the dashboard ships a web-app manifest and icon,
+   so it installs like a native app.
+
+The Move card also has a **🔒 Keep screen on** toggle (screen wake lock)
+so the phone doesn't sleep mid-session, and a **🎮 gamepad** pill in the
+header — pair a Bluetooth controller and its left stick slews the scope.
 
 One safety note: the joystick sends "start" on press and "stop" on
 release. If the Wi-Fi drops mid-drag, the stop may never arrive and the
@@ -269,9 +300,14 @@ if (check_manual_override("http://127.0.0.1:8765") or {}).get("claimed"):
 | `log [--tail N] [--date YYYY-MM-DD]` | tonight's session log |
 | `goto "M51" --at 23:10` | wait until local HH:MM, then slew |
 | `targets [query]` | catalog search |
-| `queue --plan night.yaml [--dwell N]` | slew the AstroCapture night plan |
+| `queue --plan night.yaml [--dwell N] [--recenter-minutes M]` | slew the AstroCapture night plan; M>0 re-centers by plate solving |
 | `align [--star NAME] [--fit] [--status] [--clear] [--reuse]` | software pointing model, no HC menus |
 | `center "M51" [--exposure S] [--tolerance A] [--max-iters N]` | closed-loop plate-solve centering |
+| `mosaic TARGET [--fov WxH] [--overlap F] [--size WxH] [--nx N --ny M] [--out plan.yaml]` | panel grid for big targets |
+| `ephem NAME [--goto]` | comet/asteroid position via JPL SBDB (cached); --goto slews |
+| `satpass NORAD [--hours H]` | satellite pass predictions (needs `sgp4`) |
+| `sat-track NORAD [--hz H]` | live satellite tracking until Ctrl-C (needs `sgp4`) |
+| `track-rate sidereal\|lunar\|solar` | differential tracking rate (serial/sim) |
 | `dash` / `server [--port N]` | web console / JSON API |
 
 Global flags: `--backend sim|serial|indi`, `--port`, `--config`, `--slew-rate`

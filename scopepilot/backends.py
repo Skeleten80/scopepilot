@@ -80,6 +80,15 @@ class Backend(abc.ABC):
     @abc.abstractmethod
     def jog_stop(self, axis: str | None = None) -> None: ...
 
+    def variable_rate(self, axis: str, rate_arcsec_s: float) -> None:
+        """Continuous guide-rate offset on *axis* (signed "/s).
+
+        Used for differential tracking (lunar/solar/satellite). Backends
+        without AUX guide-rate support raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{self.name} backend has no variable guide-rate support")
+
     @abc.abstractmethod
     def set_hc_time(
         self, year: int, month: int, day: int, hour: int, minute: int, second: int,
@@ -198,6 +207,9 @@ class SerialBackend(Backend):
 
     def jog_start(self, axis: str, direction: int, rate: int) -> None:
         self._d().jog(axis, direction, rate)
+
+    def variable_rate(self, axis: str, rate_arcsec_s: float) -> None:
+        self._d().variable_rate(axis, rate_arcsec_s)
 
     def jog_stop(self, axis: str | None = None) -> None:
         d = self._d()
@@ -342,6 +354,9 @@ class SimBackend(Backend):
 
     def jog_stop(self, axis: str | None = None) -> None:
         self._serial_view().jog_stop(axis)
+
+    def variable_rate(self, axis: str, rate_arcsec_s: float) -> None:
+        self._serial_view().variable_rate(axis, rate_arcsec_s)
 
     def set_hc_time(self, year, month, day, hour, minute, second,
                     utc_offset_hours, dst) -> None:
