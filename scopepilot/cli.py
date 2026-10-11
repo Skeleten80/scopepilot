@@ -166,6 +166,16 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("rate", choices=["sidereal", "lunar", "solar"],
                     nargs="?", default="sidereal")
 
+    al = sub.add_parser("alpaca", help="ASCOM Alpaca bridge: expose the "
+                        "mount as a standard Alpaca telescope (for N.I.N.A. "
+                        "etc. on Windows)")
+    al.add_argument("--port", type=int, default=11111,
+                    help="Alpaca TCP port (discovery stays on UDP 32227)")
+    al.add_argument("--host", default="0.0.0.0",
+                    help="bind address (default all interfaces)")
+    al.add_argument("--no-discovery", action="store_true",
+                    help="disable UDP discovery responder")
+
     d = sub.add_parser("dash", help="web hand-controller dashboard")
     d.add_argument("--host", default="127.0.0.1")
     d.add_argument("--port", dest="http_port", type=int, default=None)
@@ -820,6 +830,16 @@ def cmd_sat_track(args, cfg) -> int:
     return 0
 
 
+def cmd_alpaca(args, cfg) -> int:
+    from scopepilot.alpaca import serve_alpaca
+    # serve_alpaca owns connect/disconnect (it must stay connected while
+    # clients come and go).
+    scope = _controller(args, cfg)
+    serve_alpaca(scope, host=args.host, port=args.port,
+                 discovery=not args.no_discovery)
+    return 0
+
+
 def cmd_track_rate(args, cfg) -> int:
     with _controller(args, cfg) as scope:
         try:
@@ -1008,6 +1028,7 @@ _COMMANDS = {
     "satpass": cmd_satpass,
     "sat-track": cmd_sat_track,
     "track-rate": cmd_track_rate,
+    "alpaca": cmd_alpaca,
 }
 
 

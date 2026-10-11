@@ -250,6 +250,20 @@ release. If the Wi-Fi drops mid-drag, the stop may never arrive and the
 mount keeps slewing — so release the knob (or hit Stop) before walking
 away, and keep the computer as your primary control.
 
+### ASCOM Alpaca bridge (Windows software)
+
+`scopepilot alpaca` exposes the mount as a standard **Alpaca telescope
+device** (TCP 11111, UDP discovery on 32227) — no Windows driver install
+needed. In N.I.N.A.: Equipment → Telescope → ASCOM Alpaca Remote Device,
+enter this computer's IP and port 11111, connect. SharpCap, Stellarium
+and anything else speaking Alpaca works the same way.
+
+What's mapped: slew/sync/abort/park/unpark, MoveAxis (RA/Dec projected
+onto az/alt through the local Jacobian), PulseGuide, tracking on/off,
+drive rates 0/1/2 (sidereal/lunar/solar → the differential guide-rate
+engine), site lat/lon, UTC date. Only one server may own the mount at a
+time — run `scopepilot alpaca` *or* `scopepilot dash`, not both.
+
 ## Working alongside AstroCapture
 
 **Option A — shared indiserver (recommended while imaging).**
@@ -308,6 +322,7 @@ if (check_manual_override("http://127.0.0.1:8765") or {}).get("claimed"):
 | `satpass NORAD [--hours H]` | satellite pass predictions (needs `sgp4`) |
 | `sat-track NORAD [--hz H]` | live satellite tracking until Ctrl-C (needs `sgp4`) |
 | `track-rate sidereal\|lunar\|solar` | differential tracking rate (serial/sim) |
+| `alpaca [--port 11111] [--host HOST] [--no-discovery]` | ASCOM Alpaca bridge: standard Alpaca telescope device for N.I.N.A. etc. |
 | `dash` / `server [--port N]` | web console / JSON API |
 
 Global flags: `--backend sim|serial|indi`, `--port`, `--config`, `--slew-rate`
