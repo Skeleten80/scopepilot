@@ -1,10 +1,11 @@
 """Bridge tests: night-plan parsing, catalog resolution, override polling."""
 
+from pathlib import Path
 import pytest
 
 from scopepilot import bridge
 
-PLAN = "/home/hatch/workspace/astro-capture/examples/night_queue.yaml"
+PLAN = str(Path(__file__).parent / "fixtures" / "night_queue.yaml")
 
 
 def test_read_night_plan():

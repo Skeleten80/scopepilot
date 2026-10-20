@@ -1,8 +1,9 @@
 """CLI smoke tests on the sim backend."""
 
+from pathlib import Path
 from scopepilot.cli import main
 
-PLAN = "/home/hatch/workspace/astro-capture/examples/night_queue.yaml"
+PLAN = str(Path(__file__).parent / "fixtures" / "night_queue.yaml")
 SIM = ["--backend", "sim"]
 
 

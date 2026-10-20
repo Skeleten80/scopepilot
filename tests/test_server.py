@@ -2,13 +2,17 @@
 
 import json
 import threading
+import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import pytest
 
 from scopepilot.backends import SimBackend
 from scopepilot.controller import TelescopeController
 from scopepilot.server import create_server
+
+FIXTURE_PLAN = Path(__file__).parent / "fixtures" / "night_queue.yaml"
 
 
 @pytest.fixture()
@@ -132,7 +136,7 @@ def test_targets_search(api):
 def test_plan(api):
     code, body = _get(
         api,
-        "/api/plan?path=/home/hatch/workspace/astro-capture/examples/night_queue.yaml",
+        "/api/plan?path=" + urllib.parse.quote(str(FIXTURE_PLAN)),
     )
     assert code == 200
     targets = json.loads(body)["targets"]
